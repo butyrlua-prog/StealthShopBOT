@@ -19,7 +19,7 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
 # Состояния для ConversationHandler
-MAIN_MENU, MEN_MENU, WOMEN_MENU = range(3)
+MAIN_MENU, MEN_MENU, WOMEN_MENU, SHOES_MENU, SHOES_SIZES = range(5)
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -51,8 +51,26 @@ def women_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
+def shoes_menu_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton("Сланцы")],
+        [KeyboardButton("Назад в меню")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def shoe_sizes_keyboard() -> ReplyKeyboardMarkup:
+    # Размеры от 34 до 46 включительно
+    sizes = [str(i) for i in range(34, 47)]
+    # Разбиваем по рядам, по 4 кнопки в ряд (чтоб не было простыни в один ряд)
+    rows = [sizes[i:i + 4] for i in range(0, len(sizes), 4)]
+    keyboard = [[KeyboardButton(size) for size in row] for row in rows]
+    # Добавляем кнопку "Назад к категориям обуви"
+    keyboard.append([KeyboardButton("Назад к категориям обуви")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Старт и показ главного меню."""
     await update.message.reply_text(
         "Добро пожаловать в магазин.\nВыберите раздел:",
         reply_markup=main_menu_keyboard(),
@@ -61,7 +79,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатываем нажатия в главном меню."""
     text = update.message.text
 
     if text == "Мужская одежда":
@@ -83,8 +100,11 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     if text == "Обувь":
-        await update.message.reply_text("Раздел обуви пока в разработке.")
-        return MAIN_MENU
+        await update.message.reply_text(
+            "Раздел обуви. Выберите категорию:",
+            reply_markup=shoes_menu_keyboard(),
+        )
+        return SHOES_MENU
 
     if text == "Распродажа":
         await update.message.reply_text("Раздел распродажи пока в разработке.")
@@ -102,7 +122,6 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подкатегории мужской одежды."""
     text = update.message.text
 
     if text == "Назад в меню":
@@ -129,7 +148,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подкатегории женской одежды."""
     text = update.message.text
 
     if text == "Назад в меню":
@@ -155,22 +173,51 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WOMEN_MENU
 
 
-async def on_start(app):
-    """
-    Хук, который вызывается при запуске приложения.
-    Здесь мы принудительно отключаем вебхук,
-    чтобы не было конфликта с run_polling().
-    """
-    await app.bot.delete_webhook(drop_pending_updates=True)
+async def shoes_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "Назад в меню":
+        await update.message.reply_text(
+            "Главное меню:",
+            reply_markup=main_menu_keyboard(),
+        )
+        return MAIN_MENU
+
+    if text == "Сланцы":
+        await update.message.reply_text(
+            "Сланцы. Выберите размер:",
+            reply_markup=shoe_sizes_keyboard(),
+        )
+        return SHOES_SIZES
+
+    await update.message.reply_text("Выберите категорию обуви из списка.")
+    return SHOES_MENU
+
+
+async def shoes_sizes_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "Назад к категориям обуви":
+        await update.message.reply_text(
+            "Раздел обуви. Выберите категорию:",
+            reply_markup=shoes_menu_keyboard(),
+        )
+        return SHOES_MENU
+
+    # Проверяем, что это один из размеров 34–46
+    valid_sizes = [str(i) for i in range(34, 47)]
+    if text in valid_sizes:
+        await update.message.reply_text(
+            f"Сланцы, размер {text}: пока без списка товаров."
+        )
+    else:
+        await update.message.reply_text("Выберите размер из списка.")
+
+    return SHOES_SIZES
 
 
 def main():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .post_init(on_start)  # вызовем on_start перед началом pollinga
-        .build()
-    )
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -183,6 +230,12 @@ def main():
             ],
             WOMEN_MENU: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, women_menu_router)
+            ],
+            SHOES_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, shoes_menu_router)
+            ],
+            SHOES_SIZES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, shoes_sizes_router)
             ],
         },
         fallbacks=[CommandHandler("start", start)],
