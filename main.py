@@ -1,57 +1,85 @@
 import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# Наши категории (кнопки)
-CATEGORIES = [
-    ["Мужская одежда", "Женская одежда"],
-    ["Обувь", "Аксессуары"],
-]
+
+# ------------------ ГЛАВНОЕ МЕНЮ ------------------
+
+def main_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("👕 Мужская одежда", callback_data="MEN")],
+        [InlineKeyboardButton("👗 Женская одежда", callback_data="WOMEN")],
+        [InlineKeyboardButton("🎒 Аксессуары", callback_data="ACCESSORIES")],
+        [InlineKeyboardButton("👟 Обувь", callback_data="SHOES")],
+        [InlineKeyboardButton("🔥 Распродажа", callback_data="SALE")],
+        [InlineKeyboardButton("🧺 Моя корзина", callback_data="CART")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = ReplyKeyboardMarkup(
-        CATEGORIES,
-        resize_keyboard=True,
-        one_time_keyboard=False,  # кнопки будут оставаться
-    )
     await update.message.reply_text(
-        "Привет! Это магазин.\nВыбери категорию ниже 👇",
-        reply_markup=keyboard,
+        "Добро пожаловать в магазин!\nВыберите категорию 👇",
+        reply_markup=main_menu_keyboard()
     )
 
-async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
 
-    # Плоский список всех названий категорий
-    all_categories = [name for row in CATEGORIES for name in row]
+# ------------------ ОБРАБОТКА КНОПОК ------------------
 
-    if text in all_categories:
-        await update.message.reply_text(
-            f"Ты выбрал категорию: *{text}*\n"
-            "Пока здесь просто заглушка, дальше добавим список товаров 😉",
-            parse_mode="Markdown",
+async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "MEN":
+        await query.edit_message_text(
+            "Вы выбрали: Мужская одежда 👕\n(подкатегории добавим следующим шагом)",
+            reply_markup=main_menu_keyboard()
         )
-    else:
-        await update.message.reply_text(
-            "Пока я понимаю только кнопки категорий снизу.\n"
-            "Нажми на одну из них 👇"
+
+    elif data == "WOMEN":
+        await query.edit_message_text(
+            "Вы выбрали: Женская одежда 👗\n(подкатегории добавим следующим шагом)",
+            reply_markup=main_menu_keyboard()
         )
+
+    elif data == "ACCESSORIES":
+        await query.edit_message_text(
+            "Вы выбрали: Аксессуары 🎒\n(подкатегории добавим следующим шагом)",
+            reply_markup=main_menu_keyboard()
+        )
+
+    elif data == "SHOES":
+        await query.edit_message_text(
+            "Вы выбрали: Обувь 👟\n(подкатегории добавим следующим шагом)",
+            reply_markup=main_menu_keyboard()
+        )
+
+    elif data == "SALE":
+        await query.edit_message_text(
+            "Раздел: 🔥 Распродажа\n(добавим позже)",
+            reply_markup=main_menu_keyboard()
+        )
+
+    elif data == "CART":
+        await query.edit_message_text(
+            "🧺 Ваша корзина пуста.\n(Функционал добавим позже)",
+            reply_markup=main_menu_keyboard()
+        )
+
+
+# ------------------ ЗАПУСК ------------------
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category))
+    app.add_handler(CallbackQueryHandler(callbacks))
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
