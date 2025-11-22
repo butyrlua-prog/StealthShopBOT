@@ -94,7 +94,6 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Корзина пока пустая.")
         return MAIN_MENU
 
-    # Любой другой текст — просто повторяем меню
     await update.message.reply_text(
         "Не понял команду. Выберите пункт из меню.",
         reply_markup=main_menu_keyboard(),
@@ -126,7 +125,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Выберите подкатегорию из списка.")
 
-    # Остаёмся в MEN_MENU
     return MEN_MENU
 
 
@@ -154,12 +152,25 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Выберите подкатегорию из списка.")
 
-    # Остаёмся в WOMEN_MENU
     return WOMEN_MENU
 
 
+async def on_start(app):
+    """
+    Хук, который вызывается при запуске приложения.
+    Здесь мы принудительно отключаем вебхук,
+    чтобы не было конфликта с run_polling().
+    """
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
+
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(on_start)  # вызовем on_start перед началом pollinga
+        .build()
+    )
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
