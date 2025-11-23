@@ -1,9 +1,13 @@
 import os
+import json
 import logging
+
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -14,31 +18,63 @@ from telegram.ext import (
     filters,
 )
 
-# Логирование (на всякий случай)
+# ===== ЛОГИ =====
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+logger = logging.getLogger(__name__)
 
-# Токен берём из переменной окружения Railway
+# ===== ТОКЕН БОТА =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# Состояния
-(
-    MAIN_MENU,
-    MEN_MENU,
-    WOMEN_MENU,
-    MEN_OUTER_MENU,
-    WOMEN_OUTER_MENU,
-    SHOES_MENU,
-    MEN_SIZE_MENU,
-    WOMEN_SIZE_MENU,
-) = range(8)
+# ===== (ОПЦИОНАЛЬНО) GOOGLE SHEETS =====
+SHEET = None
+try:
+    gs_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    gs_sheet_id = os.getenv("GOOGLE_SHEET_ID")
 
+    if gs_json and gs_sheet_id:
+        import gspread
+        from google.oauth2.service_account import Credentials
 
-# ---------- КЛАВИАТУРЫ ----------
+        creds_dict = json.loads(gs_json)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        credentials = Credentials.from_service_account_info(
+            creds_dict, scopes=scopes
+        )
+        client = gspread.authorize(credentials)
+        SHEET = client.open_by_key(gs_sheet_id).sheet1
+        logger.info("Google Sheets connected successfully")
+    else:
+        logger.info("Google Sheets: env vars not set, skipping")
+except Exception as e:
+    logger.error("Google Sheets init error: %s", e)
+    SHEET = None
+
+# ===== СОСТОЯНИЯ ДЛЯ ДИАЛОГА =====
+MAIN_MENU, MEN_MENU, WOMEN_MENU, SHOES_MENU = range(4)
+
+# ===== КОНСТАНТЫ =====
+
+CLOTHES_SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
+
+SHOES_CATEGORIES = ["Кроссовки", "Кеды", "Сланцы", "Ботинки"]
+
+SHOES_SIZES = [
+    "34", "34,5", "35", "35,5",
+    "36", "36,5", "37", "37,5",
+    "38", "38,5", "39", "39,5",
+    "40", "40,5", "41", "41,5",
+    "42", "42,5", "43", "43,5",
+    "44", "44,5", "45", "45,5",
+    "46",
+]
+
+# ===== КЛАВИАТУРЫ =====
+
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
@@ -69,36 +105,15 @@ def women_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def men_outerwear_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("Куртки | Плащи | Ветровки")],
-        [KeyboardButton("Худи | Свитшоты | Олимпийки")],
-        [KeyboardButton("Бомберы | Свитеры")],
-        [KeyboardButton("Назад к мужской одежде")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def women_outerwear_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("Куртки")],
-        [KeyboardButton("Худи | Свитшоты | Олимпийки")],
-        [KeyboardButton("Свитеры | Бомберы")],
-        [KeyboardButton("Назад к женской одежде")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
 def clothes_size_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
-        [KeyboardButton("XS"), KeyboardButton("S"), KeyboardButton("M")],
-        [KeyboardButton("L"), KeyboardButton("XL"), KeyboardButton("XXL")],
-        [KeyboardButton("Назад к подкатегориям")],
+        [KeyboardButton(size) for size in CLOTHES_SIZES],
+        [KeyboardButton("Назад к категориям"), KeyboardButton("Назад в меню")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def shoes_category_keyboard() -> ReplyKeyboardMarkup:
+def shoes_menu_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("Кроссовки"), KeyboardButton("Кеды")],
         [KeyboardButton("Сланцы"), KeyboardButton("Ботинки")],
@@ -108,39 +123,59 @@ def shoes_category_keyboard() -> ReplyKeyboardMarkup:
 
 
 def shoes_size_keyboard() -> ReplyKeyboardMarkup:
-    # Размеры 34–46 с половинками
-    sizes = [
-        "34", "34,5", "35", "35,5",
-        "36", "36,5", "37", "37,5",
-        "38", "38,5", "39", "39,5",
-        "40", "40,5", "41", "41,5",
-        "42", "42,5", "43", "43,5",
-        "44", "44,5", "45", "45,5",
-        "46",
-    ]
-    keyboard = []
+    rows = []
     row = []
-    for s in sizes:
+    for s in SHOES_SIZES:
         row.append(KeyboardButton(s))
         if len(row) == 4:
-            keyboard.append(row)
+            rows.append(row)
             row = []
     if row:
-        keyboard.append(row)
+        rows.append(row)
+    rows.append(
+        [KeyboardButton("Назад к категориям"), KeyboardButton("Назад в меню")]
+    )
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-    keyboard.append([KeyboardButton("Назад к выбору обуви")])
 
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+# ===== ВСПОМОГАТЕЛЬНОЕ: ЗАПРОС ТОВАРОВ (пока заглушка) =====
 
 
-# ---------- ОБРАБОТЧИКИ ----------
+def make_fake_items_text(
+    gender: str,
+    main_category: str,
+    subcategory: str,
+    size_group: str,
+    size_value: str,
+) -> str:
+    """
+    Пока вместо Google Sheets возвращаем текст-заглушку.
+    Позже сюда подключим чтение из таблицы.
+    """
+    return (
+        f"Здесь будут товары:\n"
+        f"- Пол: {gender}\n"
+        f"- Раздел: {main_category}\n"
+        f"- Подкатегория: {subcategory}\n"
+        f"- Размерная группа: {size_group}\n"
+        f"- Размер: {size_value}\n\n"
+        f"Когда подключим таблицу, бот будет подставлять реальные вещи."
+    )
+
+
+# ===== ХЕНДЛЕРЫ =====
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     await update.message.reply_text(
         "Добро пожаловать в магазин.\nВыберите раздел:",
         reply_markup=main_menu_keyboard(),
     )
     return MAIN_MENU
+
+
+# --- ГЛАВНОЕ МЕНЮ ---
 
 
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -161,22 +196,31 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WOMEN_MENU
 
     if text == "Аксессуары":
-        await update.message.reply_text("Раздел аксессуаров пока в разработке.")
+        await update.message.reply_text(
+            "Раздел аксессуаров пока в разработке.",
+            reply_markup=main_menu_keyboard(),
+        )
         return MAIN_MENU
 
     if text == "Обувь":
         await update.message.reply_text(
-            "Раздел обуви. Сначала выберите категорию:",
-            reply_markup=shoes_category_keyboard(),
+            "Раздел обуви. Выберите категорию:",
+            reply_markup=shoes_menu_keyboard(),
         )
         return SHOES_MENU
 
     if text == "Распродажа":
-        await update.message.reply_text("Раздел распродажи пока в разработке.")
+        await update.message.reply_text(
+            "Раздел распродажи пока в разработке.",
+            reply_markup=main_menu_keyboard(),
+        )
         return MAIN_MENU
 
     if text == "Моя корзина":
-        await update.message.reply_text("Корзина пока пустая.")
+        await update.message.reply_text(
+            "Корзина пока пустая.",
+            reply_markup=main_menu_keyboard(),
+        )
         return MAIN_MENU
 
     await update.message.reply_text(
@@ -186,249 +230,185 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ----- Мужская одежда -----
+# --- МУЖСКАЯ ОДЕЖДА ---
+
 
 async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
+    # навигация
     if text == "Назад в меню":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_menu_keyboard(),
+            "Главное меню:", reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
 
-    if text == "Сумки | Рюкзаки":
-        await update.message.reply_text("Мужские сумки и рюкзаки: пока без списка товаров.")
-        return MEN_MENU
-
-    if text == "Головные уборы":
-        await update.message.reply_text("Мужские головные уборы: пока без списка товаров.")
-        return MEN_MENU
-
-    if text == "Верхняя одежда":
+    if text == "Назад к категориям":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Мужская верхняя одежда. Выберите подкатегорию:",
-            reply_markup=men_outerwear_keyboard(),
+            "Мужская одежда. Выберите подкатегорию:",
+            reply_markup=men_menu_keyboard(),
         )
-        return MEN_OUTER_MENU
+        return MEN_MENU
 
-    if text in ["Футболки", "Штаны | Шорты"]:
-        # Переход в выбор размера одежды
-        context.user_data["men_clothes_category"] = text
+    # выбор подкатегории
+    men_subcats = [
+        "Сумки | Рюкзаки",
+        "Верхняя одежда",
+        "Футболки",
+        "Головные уборы",
+        "Штаны | Шорты",
+    ]
+
+    if text in men_subcats:
+        context.user_data["current"] = {
+            "gender": "M",
+            "main_category": "Одежда",
+            "subcategory": text,
+            "size_group": "Одежда",
+        }
         await update.message.reply_text(
             f"{text}. Выберите размер:",
             reply_markup=clothes_size_keyboard(),
         )
-        return MEN_SIZE_MENU
+        return MEN_MENU
 
-    await update.message.reply_text("Выберите подкатегорию из списка.")
+    # выбор размера
+    if text in CLOTHES_SIZES and "current" in context.user_data:
+        current = context.user_data["current"]
+        msg = make_fake_items_text(
+            gender=current["gender"],
+            main_category=current["main_category"],
+            subcategory=current["subcategory"],
+            size_group=current["size_group"],
+            size_value=text,
+        )
+        await update.message.reply_text(msg)
+        return MEN_MENU
+
+    await update.message.reply_text(
+        "Выберите подкатегорию или размер из списка."
+    )
     return MEN_MENU
 
 
-async def men_outerwear_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+# --- ЖЕНСКАЯ ОДЕЖДА ---
 
-    if text == "Назад к мужской одежде":
-        await update.message.reply_text(
-            "Мужская одежда. Выберите подкатегорию:",
-            reply_markup=men_menu_keyboard(),
-        )
-        return MEN_MENU
-
-    outer_cats = [
-        "Куртки | Плащи | Ветровки",
-        "Худи | Свитшоты | Олимпийки",
-        "Бомберы | Свитеры",
-    ]
-
-    if text in outer_cats:
-        context.user_data["men_clothes_category"] = text
-        await update.message.reply_text(
-            f"{text}. Выберите размер:",
-            reply_markup=clothes_size_keyboard(),
-        )
-        return MEN_SIZE_MENU
-
-    await update.message.reply_text("Выберите подкатегорию из списка.")
-    return MEN_OUTER_MENU
-
-
-async def men_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "Назад к подкатегориям":
-        await update.message.reply_text(
-            "Мужская одежда. Выберите подкатегорию:",
-            reply_markup=men_menu_keyboard(),
-        )
-        return MEN_MENU
-
-    sizes = ["XS", "S", "M", "L", "XL", "XXL"]
-    if text in sizes:
-        category = context.user_data.get("men_clothes_category", "Категория не выбрана")
-        await update.message.reply_text(
-            f"{category}, размер {text}: пока без списка товаров."
-        )
-        return MEN_SIZE_MENU
-
-    await update.message.reply_text(
-        "Выберите размер из списка или нажмите 'Назад к подкатегориям'."
-    )
-    return MEN_SIZE_MENU
-
-
-# ----- Женская одежда -----
 
 async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "Назад в меню":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_menu_keyboard(),
+            "Главное меню:", reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
 
-    if text == "Сумки":
-        await update.message.reply_text("Женские сумки: пока без списка товаров.")
-        return WOMEN_MENU
-
-    if text == "Головные уборы":
-        await update.message.reply_text("Женские головные уборы: пока без списка товаров.")
-        return WOMEN_MENU
-
-    if text == "Верхняя одежда":
+    if text == "Назад к категориям":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Женская верхняя одежда. Выберите подкатегорию:",
-            reply_markup=women_outerwear_keyboard(),
+            "Женская одежда. Выберите подкатегорию:",
+            reply_markup=women_menu_keyboard(),
         )
-        return WOMEN_OUTER_MENU
+        return WOMEN_MENU
 
-    if text in ["Футболки | Топы", "Штаны | Шорты"]:
-        context.user_data["women_clothes_category"] = text
+    women_subcats = [
+        "Сумки",
+        "Головные уборы",
+        "Футболки | Топы",
+        "Верхняя одежда",
+        "Штаны | Шорты",
+    ]
+
+    if text in women_subcats:
+        context.user_data["current"] = {
+            "gender": "F",
+            "main_category": "Одежда",
+            "subcategory": text,
+            "size_group": "Одежда",
+        }
         await update.message.reply_text(
             f"{text}. Выберите размер:",
             reply_markup=clothes_size_keyboard(),
         )
-        return WOMEN_SIZE_MENU
+        return WOMEN_MENU
 
-    await update.message.reply_text("Выберите подкатегорию из списка.")
+    if text in CLOTHES_SIZES and "current" in context.user_data:
+        current = context.user_data["current"]
+        msg = make_fake_items_text(
+            gender=current["gender"],
+            main_category=current["main_category"],
+            subcategory=current["subcategory"],
+            size_group=current["size_group"],
+            size_value=text,
+        )
+        await update.message.reply_text(msg)
+        return WOMEN_MENU
+
+    await update.message.reply_text(
+        "Выберите подкатегорию или размер из списка."
+    )
     return WOMEN_MENU
 
 
-async def women_outerwear_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "Назад к женской одежде":
-        await update.message.reply_text(
-            "Женская одежда. Выберите подкатегорию:",
-            reply_markup=women_menu_keyboard(),
-        )
-        return WOMEN_MENU
-
-    outer_cats = [
-        "Куртки",
-        "Худи | Свитшоты | Олимпийки",
-        "Свитеры | Бомберы",
-    ]
-
-    if text in outer_cats:
-        context.user_data["women_clothes_category"] = text
-        await update.message.reply_text(
-            f"{text}. Выберите размер:",
-            reply_markup=clothes_size_keyboard(),
-        )
-        return WOMEN_SIZE_MENU
-
-    await update.message.reply_text("Выберите подкатегорию из списка.")
-    return WOMEN_OUTER_MENU
+# --- ОБУВЬ ---
 
 
-async def women_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "Назад к подкатегориям":
-        await update.message.reply_text(
-            "Женская одежда. Выберите подкатегорию:",
-            reply_markup=women_menu_keyboard(),
-        )
-        return WOMEN_MENU
-
-    sizes = ["XS", "S", "M", "L", "XL", "XXL"]
-    if text in sizes:
-        category = context.user_data.get("women_clothes_category", "Категория не выбрана")
-        await update.message.reply_text(
-            f"{category}, размер {text}: пока без списка товаров."
-        )
-        return WOMEN_SIZE_MENU
-
-    await update.message.reply_text(
-        "Выберите размер из списка или нажмите 'Назад к подкатегориям'."
-    )
-    return WOMEN_SIZE_MENU
-
-
-# ----- Обувь -----
-
-async def shoes_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def shoes_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "Назад в меню":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Главное меню:",
-            reply_markup=main_menu_keyboard(),
+            "Главное меню:", reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
 
-    if text == "Назад к выбору обуви":
+    if text == "Назад к категориям":
+        context.user_data.pop("current", None)
         await update.message.reply_text(
-            "Раздел обуви. Выберите категорию:",
-            reply_markup=shoes_category_keyboard(),
+            "Обувь. Выберите категорию:",
+            reply_markup=shoes_menu_keyboard(),
         )
-        # Остаёмся в SHOES_MENU
         return SHOES_MENU
 
-    categories = ["Кроссовки", "Кеды", "Сланцы", "Ботинки"]
-    if text in categories:
-        context.user_data["shoes_category"] = text
+    # выбор подкатегории обуви
+    if text in SHOES_CATEGORIES:
+        context.user_data["current"] = {
+            "gender": "UNI",
+            "main_category": "Обувь",
+            "subcategory": text,
+            "size_group": "Обувь",
+        }
         await update.message.reply_text(
             f"{text}. Выберите размер:",
             reply_markup=shoes_size_keyboard(),
         )
         return SHOES_MENU
 
-    sizes = [
-        "34", "34,5", "35", "35,5",
-        "36", "36,5", "37", "37,5",
-        "38", "38,5", "39", "39,5",
-        "40", "40,5", "41", "41,5",
-        "42", "42,5", "43", "43,5",
-        "44", "44,5", "45", "45,5",
-        "46",
-    ]
-
-    if text in sizes:
-        cat = context.user_data.get("shoes_category")
-        if not cat:
-            await update.message.reply_text(
-                "Сначала выберите категорию обуви.",
-                reply_markup=shoes_category_keyboard(),
-            )
-            return SHOES_MENU
-
-        await update.message.reply_text(
-            f"{cat}, размер {text}: пока без списка товаров."
+    # выбор размера обуви
+    if text in SHOES_SIZES and "current" in context.user_data:
+        current = context.user_data["current"]
+        msg = make_fake_items_text(
+            gender=current["gender"],
+            main_category=current["main_category"],
+            subcategory=current["subcategory"],
+            size_group=current["size_group"],
+            size_value=text,
         )
+        await update.message.reply_text(msg)
         return SHOES_MENU
 
     await update.message.reply_text(
-        "Выберите категорию обуви или размер из списка.",
+        "Выберите категорию обуви или размер из списка."
     )
     return SHOES_MENU
 
 
-# ---------- MAIN ----------
+# ===== MAIN =====
+
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -445,20 +425,8 @@ def main():
             WOMEN_MENU: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, women_menu_router)
             ],
-            MEN_OUTER_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, men_outerwear_router)
-            ],
-            WOMEN_OUTER_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, women_outerwear_router)
-            ],
-            MEN_SIZE_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, men_size_router)
-            ],
-            WOMEN_SIZE_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, women_size_router)
-            ],
             SHOES_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, shoes_router)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, shoes_menu_router)
             ],
         },
         fallbacks=[CommandHandler("start", start)],
