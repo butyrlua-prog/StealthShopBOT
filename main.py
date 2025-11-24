@@ -792,33 +792,36 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
 
-# ---------- ХЕНДЛЕР ДЛЯ fail_id В КАНАЛЕ С ФОТО ----------
+# ---------- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ fail_id ИЗ КАНАЛА С ФОТО ----------
 async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
-    fail_id:
-    <file_id>
+    fail_id: <file_id>
+
+    Работает и для каналов, и для лички/чатов.
     """
     if not PHOTO_CHANNEL_ID:
         return
 
-    chat = update.effective_chat
-    if chat.id != PHOTO_CHANNEL_ID:
+    # Сообщение с фото может быть в message (чаты) или channel_post (каналы)
+    msg = update.effective_message
+    if msg is None or not msg.photo:
         return
 
-    if not update.message or not update.message.photo:
+    # Проверяем, что это именно нужный канал
+    if msg.chat.id != PHOTO_CHANNEL_ID:
         return
 
-    file_id = update.message.photo[-1].file_id
+    file_id = msg.photo[-1].file_id
     text = f"fail_id:\n{file_id}"
 
+    # Ответом под тем же постом
     await context.bot.send_message(
-        chat_id=chat.id,
+        chat_id=msg.chat.id,
         text=text,
-        reply_to_message_id=update.message.message_id,
+        reply_to_message_id=msg.message_id,
     )
-
-
+    
 # ----------------- MAIN -----------------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
