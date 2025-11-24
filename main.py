@@ -117,8 +117,7 @@ def filter_products(
         if n_main and norm(row.get("Main_category")) != n_main:
             continue
 
-        # Пол: если в фильтре указан муж/жен, пропускаем только совпадающие
-        # либо Unisex. Для обуви gender=None — не фильтруем.
+        # Пол
         row_gender = norm(row.get("Gender"))
         if n_gender:
             if row_gender not in (n_gender, "unisex", ""):
@@ -128,11 +127,11 @@ def filter_products(
         if n_sub and norm(row.get("Subcategory")) != n_sub:
             continue
 
-        # Группа размеров (например, "Обувь", "Одежда")
+        # Группа размеров
         if n_group and norm(row.get("Size_group")) != n_group:
             continue
 
-        # Конкретный размер (36 и 36.0, 36,5 и 36.5 будут совпадать)
+        # Конкретный размер
         if n_size and norm(row.get("Size")) != n_size:
             continue
 
@@ -153,7 +152,7 @@ def format_price_byn(price_raw) -> str:
     s = str(price_raw).strip()
     if not s:
         return "не указана"
-    # если пользователь случайно сам дописал BYN – второй раз не дублируем
+    # если пользователь сам дописал BYN – второй раз не дублируем
     if "byn" in s.lower():
         return s
     return f"{s} BYN"
@@ -164,7 +163,6 @@ def parse_price_to_float(price_raw) -> float:
     if price_raw is None:
         return 0.0
     s = str(price_raw)
-    # берём только первое "слово", убираем BYN и прочее
     s = s.replace("BYN", "").replace("byn", "").strip()
     s = s.split()[0] if s else ""
     try:
@@ -236,7 +234,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА ----------
 async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает текст, когда пользователь уже выбрал способ получения
@@ -245,7 +243,7 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """
     state = context.user_data.get("checkout_state")
     if not state:
-        return  # ни в каком процессе оформления заказа не находимся
+        return
 
     text = update.message.text.strip()
     user = update.effective_user
@@ -253,14 +251,18 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if state == "wait_phone_meet":
         context.user_data["checkout_state"] = None
         contact_info = f"Телефон (личная встреча): {text}"
-        await create_order(update, context, mode="Личная встреча (Минск)", contact_info=contact_info)
+        await create_order(
+            update, context, mode="Личная встреча (Минск)", contact_info=contact_info
+        )
         logger.info("User %s finished checkout (meet)", user.id)
         return
 
     if state == "wait_post_data":
         context.user_data["checkout_state"] = None
         contact_info = f"Доставка почтой. Данные:\n{text}"
-        await create_order(update, context, mode="Доставка почтой", contact_info=contact_info)
+        await create_order(
+            update, context, mode="Доставка почтой", contact_info=contact_info
+        )
         logger.info("User %s finished checkout (post)", user.id)
         return
 
@@ -305,7 +307,6 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WOMEN_MENU
 
     if text == "Обувь":
-        # Для обуви gender не фильтруем
         context.user_data["gender"] = None
         await update.message.reply_text(
             "Обувь. Выберите тип:", reply_markup=shoes_type_keyboard()
@@ -346,7 +347,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_cart(update, context)
         return MEN_MENU
 
-    # Подкатегории
     if text in (
         "Сумки | Рюкзаки",
         "Верхняя одежда",
@@ -363,7 +363,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
-    # Выбор размера одежды
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -488,7 +487,6 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SHOES_TYPE
 
-    # проверяем, что это вообще размер
     allowed_sizes = set()
     x = 34.0
     while x <= 46.0 + 1e-9:
@@ -506,7 +504,6 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     subcat = context.user_data.get("shoes_subcategory")
 
-    # Для обуви gender не фильтруем (Unisex будет подходить)
     products = filter_products(
         main_category="Обувь",
         subcategory=subcat,
@@ -542,7 +539,7 @@ async def send_products(
         size = row.get("Size") or ""
         price_raw = row.get("Price")
         price_text = format_price_byn(price_raw)
-        quantity = row.get("Quantity")  # необязательный столбец
+        quantity = row.get("Quantity")
         photo_id = row.get("Photo_url") or None
         row_id = row.get("ID")
 
@@ -588,7 +585,6 @@ async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for item in cart:
         total += parse_price_to_float(item.get("Price"))
 
-    # отправляем каждый товар с кнопкой "Удалить"
     for idx, item in enumerate(cart, start=1):
         title = item.get("Title") or "Без названия"
         size = item.get("Size") or ""
@@ -645,17 +641,14 @@ async def create_order(
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
-    # Сообщение пользователю
     await update.message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
     )
 
-    # Очищаем корзину
     context.user_data["cart"] = []
 
-    # Сообщение в канал с заказами
     if ORDERS_CHANNEL_ID:
         username = f"@{user.username}" if user.username else "нет username"
         profile_link = f"tg://user?id={user.id}"
@@ -703,7 +696,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     user_data = context.user_data
 
-    # Добавление в корзину
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
@@ -717,7 +709,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Не удалось найти товар в каталоге.")
         return
 
-    # Удаление из корзины по индексу
     if data.startswith("remove_from_cart:"):
         try:
             index = int(data.split(":", 1)[1])
@@ -732,13 +723,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("Позиция уже удалена.")
         return
 
-    # Очистка корзины
     if data == "clear_cart":
         user_data["cart"] = []
         await query.edit_message_text("Корзина очищена.")
         return
 
-    # Старт оформления заказа
     if data == "start_checkout":
         cart = get_cart(user_data)
         if not cart:
@@ -764,7 +753,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    # Выбор способа получения
     if data == "checkout_meet":
         context.user_data["checkout_state"] = "wait_phone_meet"
         await query.message.reply_text(
@@ -780,7 +768,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    # Кнопки из канала заказов: отправлен / аннулирован
     if data.startswith("order_status:"):
         try:
             _, status, user_id_str = data.split(":")
@@ -805,11 +792,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
 
-# ---------- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ fail_id ИЗ КАНАЛА С ФОТО ----------
+# ---------- ХЕНДЛЕР ДЛЯ fail_id В КАНАЛЕ С ФОТО ----------
 async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
-    fail_id: <file_id>
+    fail_id:
+    <file_id>
     """
     if not PHOTO_CHANNEL_ID:
         return
@@ -835,14 +823,14 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 0-я группа: общий чек-аут и канал с фото
+    # group=0: глобальный чек-аут и обработка фото в канале
     app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler), group=0)
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_text_handler),
         group=0,
     )
 
-    # 1-я группа: основной диалог
+    # group=1: основной диалог
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
