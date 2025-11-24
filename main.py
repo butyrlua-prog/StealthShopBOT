@@ -117,7 +117,7 @@ def filter_products(
         if n_group and norm(row.get("Size_group")) != n_group:
             continue
 
-        # Конкретный размер (36 и 36.0, 36,5 и 36.5 будут совпадать)
+        # Конкретный размер
         if n_size and norm(row.get("Size")) != n_size:
             continue
 
@@ -169,7 +169,7 @@ def shoes_size_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-# Размерная сетка одежды XS–XXL без XXXL
+# Размерная сетка одежды XS–XXL
 def clothes_size_keyboard() -> ReplyKeyboardMarkup:
     sizes = ["XS", "S", "M", "L", "XL", "XXL"]
     rows = [list(map(KeyboardButton, sizes))]
@@ -266,9 +266,14 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 price_val = 0
             total += price_val
-            lines.append(f"{item.get('Title')} — {price}")
+            # тут добавил BYN
+            lines.append(f"{item.get('Title')} — {price} BYN")
 
-        text_cart = "Ваша корзина:\n\n" + "\n".join(lines) + f"\n\nИтого: {total}"
+        text_cart = (
+            "Ваша корзина:\n\n"
+            + "\n".join(lines)
+            + f"\n\nИтого: {total} BYN"
+        )
         await update.message.reply_text(text_cart)
         return MAIN_MENU
 
@@ -290,8 +295,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    # Здесь можно позже развести подкатегории по Size_group,
-    # пока для всех используем одну сетку одежды.
     if text in (
         "Сумки | Рюкзаки",
         "Верхняя одежда",
@@ -308,7 +311,6 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
-    # Выбор размера одежды
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -443,7 +445,6 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     subcat = context.user_data.get("shoes_subcategory")
 
-    # Для обуви gender не фильтруем (Unisex будет подходить)
     products = filter_products(
         main_category="Обувь",
         subcategory=subcat,
@@ -481,7 +482,8 @@ async def send_products(
         photo_url = row.get("Photo_url") or None
         row_id = row.get("ID")
 
-        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price}"
+        # тут добавил BYN
+        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price} BYN"
         if desc:
             text += f"\n\nОписание: {desc}"
 
