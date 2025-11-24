@@ -2,7 +2,6 @@ import os
 import json
 import logging
 from typing import List, Dict, Optional
-from datetime import datetime
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -26,7 +25,8 @@ from telegram.ext import (
 
 # ----------------- ЛОГИ -----------------
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,8 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SERVICE_JSON = os.getenv("GOOGLE_SERVICE_JSON")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-
-ORDERS_CHANNEL_ID = os.getenv("ORDERS_CHANNEL_ID")  # ID канала для заказов
-OWNER_USERNAME = (os.getenv("OWNER_USERNAME") or "").lstrip("@")  # твой логин без @
+ORDERS_CHANNEL_ID = os.getenv("ORDERS_CHANNEL_ID")  # канал для заказов
+PHOTO_CHANNEL_ID = os.getenv("PHOTO_CHANNEL_ID")    # канал для фото (fail_id)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -47,28 +46,32 @@ if not SERVICE_JSON:
 if not GOOGLE_SHEET_ID:
     raise RuntimeError("GOOGLE_SHEET_ID is not set")
 
-if not ORDERS_CHANNEL_ID:
-    raise RuntimeError("ORDERS_CHANNEL_ID is not set")
+if ORDERS_CHANNEL_ID:
+    try:
+        ORDERS_CHANNEL_ID = int(ORDERS_CHANNEL_ID)
+    except ValueError:
+        logger.error("ORDERS_CHANNEL_ID must be integer chat id")
 
-try:
-    ORDERS_CHANNEL_ID_INT = int(ORDERS_CHANNEL_ID)
-except ValueError:
-    raise RuntimeError("ORDERS_CHANNEL_ID must be integer (e.g. -1001234567890)")
+if PHOTO_CHANNEL_ID:
+    try:
+        PHOTO_CHANNEL_ID = int(PHOTO_CHANNEL_ID)
+    except ValueError:
+        logger.error("PHOTO_CHANNEL_ID must be integer chat id")
 
 # ----------------- GOOGLE SHEETS ПОДКЛЮЧЕНИЕ -----------------
 creds_dict = json.loads(SERVICE_JSON)
 scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-sheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1  # первый лист
+sheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1  # Лист "Лист1" по умолчанию
 
 
 def load_products() -> List[Dict]:
     """
-    Читаем все товары как список словарей.
+    Читаем все товары из таблицы как список словарей.
     Ожидаются столбцы:
     ID, Gender, Main_category, Subcategory, Size_group,
-    Size, Title, Description, Condition, Price, Photo_url, Quantity
+    Size, Title, Description, Condition, Price, Photo_url, (опционально Quantity)
     """
     rows = sheet.get_all_records()
     return rows
@@ -80,26 +83,12 @@ def norm(s: Optional[str]) -> str:
     Нормализация строк для сравнения:
     - приводим к строке
     - обрезаем пробелы
-    - в нижний регистр
-    - запятые -> точки
+    - переводим в нижний регистр
+    - запятую заменяем на точку
     """
     if s is None:
         return ""
     return str(s).strip().lower().replace(",", ".")
-
-
-def format_price_byn(value) -> str:
-    """
-    Приводим цену к строке и гарантируем суффикс BYN,
-    если пользователь сам не указал валюту.
-    """
-    s = str(value).strip()
-    if not s:
-        return "0 BYN"
-    low = s.lower()
-    if "byn" in low or "бел" in low:
-        return s
-    return f"{s} BYN"
 
 
 def filter_products(
@@ -113,10 +102,9 @@ def filter_products(
     """
     Фильтр товаров по параметрам.
     gender=None — пол не учитывается (например, обувь unisex).
-    Также фильтруем по количеству: Quantity <= 0 — товар не показываем.
     """
     products = load_products()
-    result = []
+    result: List[Dict] = []
 
     n_main = norm(main_category)
     n_sub = norm(subcategory)
@@ -125,20 +113,12 @@ def filter_products(
     n_gender = norm(gender)
 
     for row in products:
-        # Количество
-        qty_raw = row.get("Quantity", "")
-        try:
-            qty = float(str(qty_raw).replace(",", "."))
-        except ValueError:
-            qty = 1.0  # если не число — считаем, что есть в наличии
-        if qty <= 0:
-            continue
-
         # Основная категория
         if n_main and norm(row.get("Main_category")) != n_main:
             continue
 
-        # Пол (учитываем Муж/Жен + Unisex/пусто)
+        # Пол: если в фильтре указан муж/жен, пропускаем только совпадающие
+        # либо Unisex. Для обуви gender=None — не фильтруем.
         row_gender = norm(row.get("Gender"))
         if n_gender:
             if row_gender not in (n_gender, "unisex", ""):
@@ -148,11 +128,11 @@ def filter_products(
         if n_sub and norm(row.get("Subcategory")) != n_sub:
             continue
 
-        # Группа размеров (обувь/одежда и т.п.)
+        # Группа размеров (например, "Обувь", "Одежда")
         if n_group and norm(row.get("Size_group")) != n_group:
             continue
 
-        # Конкретный размер
+        # Конкретный размер (36 и 36.0, 36,5 и 36.5 будут совпадать)
         if n_size and norm(row.get("Size")) != n_size:
             continue
 
@@ -166,35 +146,31 @@ def chunk_list(lst: List[str], n: int) -> List[List[str]]:
     return [lst[i : i + n] for i in range(0, len(lst), n)]
 
 
-def render_cart_text(cart: List[Dict]) -> str:
-    """Текстовое представление корзины с суммой."""
-    if not cart:
-        return "Ваша корзина пока пустая."
+def format_price_byn(price_raw) -> str:
+    """Возвращает цену в BYN как строку."""
+    if price_raw is None:
+        return "не указана"
+    s = str(price_raw).strip()
+    if not s:
+        return "не указана"
+    # если пользователь случайно сам дописал BYN – второй раз не дублируем
+    if "byn" in s.lower():
+        return s
+    return f"{s} BYN"
 
-    lines = []
-    total = 0.0
 
-    for idx, item in enumerate(cart, 1):
-        title = item.get("Title") or "Без названия"
-        price_raw = item.get("Price") or "0"
-        price_str = format_price_byn(price_raw)
-
-        # Вытащить числовую часть для суммирования
-        s = str(price_raw)
-        num = "".join(ch for ch in s if (ch.isdigit() or ch in ",."))
-        try:
-            val = float(num.replace(",", ".")) if num else 0.0
-        except ValueError:
-            val = 0.0
-        total += val
-
-        lines.append(f"{idx}) {title} — {price_str}")
-
-    return (
-        "Ваша корзина:\n\n"
-        + "\n".join(lines)
-        + f"\n\nИтого: {format_price_byn(total)}"
-    )
+def parse_price_to_float(price_raw) -> float:
+    """Пытается извлечь число из цены для подсчёта итоговой суммы."""
+    if price_raw is None:
+        return 0.0
+    s = str(price_raw)
+    # берём только первое "слово", убираем BYN и прочее
+    s = s.replace("BYN", "").replace("byn", "").strip()
+    s = s.split()[0] if s else ""
+    try:
+        return float(s.replace(",", "."))
+    except Exception:
+        return 0.0
 
 
 # ----------------- КЛАВИАТУРЫ -----------------
@@ -243,41 +219,8 @@ def clothes_size_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def cart_menu_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("Удалить позицию"), KeyboardButton("Оформить заказ")],
-        [KeyboardButton("Назад в меню")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def checkout_method_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("Личная встреча (Минск)")],
-        [KeyboardButton("Доставка почтой")],
-        [KeyboardButton("Назад в корзину")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def checkout_cancel_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [[KeyboardButton("Отмена оформления")]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
 # ----------------- СОСТОЯНИЯ ДИАЛОГА -----------------
-(
-    MAIN_MENU,
-    MEN_MENU,
-    WOMEN_MENU,
-    SHOES_TYPE,
-    SHOES_SIZE,
-    CART_MENU,
-    CART_REMOVE,
-    CHECKOUT_METHOD,
-    CHECKOUT_MEET_PHONE,
-    CHECKOUT_POST_DETAILS,
-) = range(10)
+MAIN_MENU, MEN_MENU, WOMEN_MENU, SHOES_TYPE, SHOES_SIZE = range(5)
 
 # ----------------- КОРЗИНА -----------------
 def get_cart(user_data: dict) -> List[Dict]:
@@ -293,12 +236,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
+async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает текст, когда пользователь уже выбрал способ получения
+    и бот ждёт от него данных.
+    Работает ДО ConversationHandler (group=0).
+    """
+    state = context.user_data.get("checkout_state")
+    if not state:
+        return  # ни в каком процессе оформления заказа не находимся
+
+    text = update.message.text.strip()
+    user = update.effective_user
+
+    if state == "wait_phone_meet":
+        context.user_data["checkout_state"] = None
+        contact_info = f"Телефон (личная встреча): {text}"
+        await create_order(update, context, mode="Личная встреча (Минск)", contact_info=contact_info)
+        logger.info("User %s finished checkout (meet)", user.id)
+        return
+
+    if state == "wait_post_data":
+        context.user_data["checkout_state"] = None
+        contact_info = f"Доставка почтой. Данные:\n{text}"
+        await create_order(update, context, mode="Доставка почтой", contact_info=contact_info)
+        logger.info("User %s finished checkout (post)", user.id)
+        return
+
+
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text == "Мужская одежда":
-        context.user_data["gender"] = "муж"
+        context.user_data["gender"] = "Муж"
         await update.message.reply_text(
             "Мужская одежда. Выберите подкатегорию:",
             reply_markup=ReplyKeyboardMarkup(
@@ -314,7 +286,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MEN_MENU
 
     if text == "Женская одежда":
-        context.user_data["gender"] = "жен"
+        context.user_data["gender"] = "Жен"
         await update.message.reply_text(
             "Женская одежда. Выберите подкатегорию:",
             reply_markup=ReplyKeyboardMarkup(
@@ -333,7 +305,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WOMEN_MENU
 
     if text == "Обувь":
-        # Для обуви gender не фильтруем (unisex/любой пол)
+        # Для обуви gender не фильтруем
         context.user_data["gender"] = None
         await update.message.reply_text(
             "Обувь. Выберите тип:", reply_markup=shoes_type_keyboard()
@@ -349,18 +321,8 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     if text == "Моя корзина":
-        cart = get_cart(context.user_data)
-        text_cart = render_cart_text(cart)
-        if not cart:
-            await update.message.reply_text(
-                text_cart, reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
-
-        await update.message.reply_text(
-            text_cart, reply_markup=cart_menu_keyboard()
-        )
-        return CART_MENU
+        await show_cart(update, context)
+        return MAIN_MENU
 
     await update.message.reply_text(
         "Не понял команду. Выберите пункт из меню.",
@@ -372,7 +334,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- МУЖСКАЯ ОДЕЖДА ----------
 async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    gender = "муж"
+    gender = "Муж"
 
     if text == "Назад в меню":
         await update.message.reply_text(
@@ -380,6 +342,11 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
+    if text == "Моя корзина":
+        await show_cart(update, context)
+        return MEN_MENU
+
+    # Подкатегории
     if text in (
         "Сумки | Рюкзаки",
         "Верхняя одежда",
@@ -396,6 +363,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
+    # Выбор размера одежды
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -403,7 +371,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = filter_products(
             main_category=main_cat,
             subcategory=subcat,
-            size_group="одежда",
+            size_group="Одежда",
             size=text,
             gender=gender,
         )
@@ -419,8 +387,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MEN_MENU
 
     await update.message.reply_text(
-        "Выберите пункт из списка.",
-        reply_markup=clothes_size_keyboard(),
+        "Выберите пункт из списка.", reply_markup=clothes_size_keyboard()
     )
     return MEN_MENU
 
@@ -428,13 +395,17 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЖЕНСКАЯ ОДЕЖДА ----------
 async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    gender = "жен"
+    gender = "Жен"
 
     if text == "Назад в меню":
         await update.message.reply_text(
             "Главное меню:", reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
+
+    if text == "Моя корзина":
+        await show_cart(update, context)
+        return WOMEN_MENU
 
     if text in (
         "Сумки",
@@ -459,7 +430,7 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = filter_products(
             main_category=main_cat,
             subcategory=subcat,
-            size_group="одежда",
+            size_group="Одежда",
             size=text,
             gender=gender,
         )
@@ -475,8 +446,7 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WOMEN_MENU
 
     await update.message.reply_text(
-        "Выберите пункт из списка.",
-        reply_markup=clothes_size_keyboard(),
+        "Выберите пункт из списка.", reply_markup=clothes_size_keyboard()
     )
     return WOMEN_MENU
 
@@ -490,6 +460,10 @@ async def shoes_type_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Главное меню:", reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
+
+    if text == "Моя корзина":
+        await show_cart(update, context)
+        return SHOES_TYPE
 
     if text in ("Кроссовки", "Кеды", "Сланцы", "Ботинки"):
         context.user_data["shoes_subcategory"] = text
@@ -514,7 +488,7 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SHOES_TYPE
 
-    # проверяем, что это размер из сетки
+    # проверяем, что это вообще размер
     allowed_sizes = set()
     x = 34.0
     while x <= 46.0 + 1e-9:
@@ -532,12 +506,13 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     subcat = context.user_data.get("shoes_subcategory")
 
+    # Для обуви gender не фильтруем (Unisex будет подходить)
     products = filter_products(
-        main_category="обувь",
+        main_category="Обувь",
         subcategory=subcat,
-        size_group="обувь",
+        size_group="Обувь",
         size=text,
-        gender=None,  # обувь может быть unisex
+        gender=None,
     )
 
     if not products:
@@ -551,297 +526,12 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SHOES_SIZE
 
 
-# ---------- КОРЗИНА: МЕНЮ ----------
-async def cart_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    cart = get_cart(context.user_data)
-
-    if text == "Назад в меню":
-        await update.message.reply_text(
-            "Главное меню:", reply_markup=main_menu_keyboard()
-        )
-        return MAIN_MENU
-
-    if not cart:
-        await update.message.reply_text(
-            "Ваша корзина пока пустая.", reply_markup=main_menu_keyboard()
-        )
-        return MAIN_MENU
-
-    if text == "Удалить позицию":
-        await update.message.reply_text(
-            render_cart_text(cart)
-            + "\n\nВведите номер позиции, которую нужно удалить.",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("Назад в корзину")]],
-                resize_keyboard=True,
-            ),
-        )
-        return CART_REMOVE
-
-    if text == "Оформить заказ":
-        await update.message.reply_text(
-            "Выберите способ получения заказа:",
-            reply_markup=checkout_method_keyboard(),
-        )
-        return CHECKOUT_METHOD
-
-    # Любой другой текст — снова показываем корзину
-    await update.message.reply_text(
-        render_cart_text(cart), reply_markup=cart_menu_keyboard()
-    )
-    return CART_MENU
-
-
-# ---------- КОРЗИНА: УДАЛЕНИЕ ----------
-async def cart_remove_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    cart = get_cart(context.user_data)
-
-    if text == "Назад в корзину":
-        if not cart:
-            await update.message.reply_text(
-                "Ваша корзина пока пустая.", reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
-        await update.message.reply_text(
-            render_cart_text(cart), reply_markup=cart_menu_keyboard()
-        )
-        return CART_MENU
-
-    if not cart:
-        await update.message.reply_text(
-            "Корзина уже пустая.", reply_markup=main_menu_keyboard()
-        )
-        return MAIN_MENU
-
-    try:
-        idx = int(text)
-    except ValueError:
-        await update.message.reply_text(
-            "Некорректный номер позиции. Введите число или нажмите 'Назад в корзину'.",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("Назад в корзину")]],
-                resize_keyboard=True,
-            ),
-        )
-        return CART_REMOVE
-
-    if not (1 <= idx <= len(cart)):
-        await update.message.reply_text(
-            "Номер вне диапазона. Попробуйте ещё раз или нажмите 'Назад в корзину'.",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("Назад в корзину")]],
-                resize_keyboard=True,
-            ),
-        )
-        return CART_REMOVE
-
-    removed = cart.pop(idx - 1)
-    await update.message.reply_text(
-        f"Позиция '{removed.get('Title')}' удалена из корзины."
-    )
-
-    if not cart:
-        await update.message.reply_text(
-            "Корзина теперь пустая.",
-            reply_markup=main_menu_keyboard(),
-        )
-        return MAIN_MENU
-
-    await update.message.reply_text(
-        render_cart_text(cart), reply_markup=cart_menu_keyboard()
-    )
-    return CART_MENU
-
-
-# ---------- ОФОРМЛЕНИЕ: ВЫБОР СПОСОБА ----------
-async def checkout_method_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    cart = get_cart(context.user_data)
-
-    if not cart:
-        await update.message.reply_text(
-            "Корзина пустая. Нечего оформлять.",
-            reply_markup=main_menu_keyboard(),
-        )
-        return MAIN_MENU
-
-    if text == "Назад в корзину":
-        await update.message.reply_text(
-            render_cart_text(cart), reply_markup=cart_menu_keyboard()
-        )
-        return CART_MENU
-
-    if text == "Личная встреча (Минск)":
-        context.user_data["checkout_method"] = "meet"
-        await update.message.reply_text(
-            "Укажите номер телефона для связи (одним сообщением).",
-            reply_markup=checkout_cancel_keyboard(),
-        )
-        return CHECKOUT_MEET_PHONE
-
-    if text == "Доставка почтой":
-        context.user_data["checkout_method"] = "post"
-        await update.message.reply_text(
-            "Отправьте одним сообщением: ФИО, номер телефона, город и адрес/индекс "
-            "или номер отделения (если это Европочта).",
-            reply_markup=checkout_cancel_keyboard(),
-        )
-        return CHECKOUT_POST_DETAILS
-
-    await update.message.reply_text(
-        "Выберите вариант из списка.",
-        reply_markup=checkout_method_keyboard(),
-    )
-    return CHECKOUT_METHOD
-
-
-# ---------- ОФОРМЛЕНИЕ: ЛИЧНАЯ ВСТРЕЧА ----------
-async def checkout_meet_phone_router(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    text = update.message.text.strip()
-
-    if text == "Отмена оформления":
-        cart = get_cart(context.user_data)
-        if not cart:
-            await update.message.reply_text(
-                "Корзина пустая.", reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
-        await update.message.reply_text(
-            render_cart_text(cart), reply_markup=cart_menu_keyboard()
-        )
-        return CART_MENU
-
-    phone = text
-    method = "Личная встреча (Минск)"
-    extra_details = f"Телефон: {phone}"
-
-    return await finalize_order(update, context, method, extra_details)
-
-
-# ---------- ОФОРМЛЕНИЕ: ДОСТАВКА ПОЧТОЙ ----------
-async def checkout_post_details_router(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    text = update.message.text.strip()
-
-    if text == "Отмена оформления":
-        cart = get_cart(context.user_data)
-        if not cart:
-            await update.message.reply_text(
-                "Корзина пустая.", reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
-        await update.message.reply_text(
-            render_cart_text(cart), reply_markup=cart_menu_keyboard()
-        )
-        return CART_MENU
-
-    method = "Доставка почтой"
-    extra_details = text  # тут всё сразу: ФИО, телефон, город, адрес/индекс/отделение
-
-    return await finalize_order(update, context, method, extra_details)
-
-
-# ---------- ФИНАЛИЗАЦИЯ ЗАКАЗА ----------
-async def finalize_order(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    method: str,
-    extra_details: str,
-) -> int:
-    cart = get_cart(context.user_data)
-    if not cart:
-        await update.message.reply_text(
-            "Корзина пустая. Нечего оформлять.",
-            reply_markup=main_menu_keyboard(),
-        )
-        return MAIN_MENU
-
-    # Собираем заказ
-    order_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    user = update.effective_user
-    username = f"@{user.username}" if user.username else "(username отсутствует)"
-
-    lines = []
-    total = 0.0
-    for idx, item in enumerate(cart, 1):
-        title = item.get("Title") or "Без названия"
-        price_raw = item.get("Price") or "0"
-        price_str = format_price_byn(price_raw)
-
-        s = str(price_raw)
-        num = "".join(ch for ch in s if (ch.isdigit() or ch in ",."))
-        try:
-            val = float(num.replace(",", ".")) if num else 0.0
-        except ValueError:
-            val = 0.0
-        total += val
-
-        lines.append(f"{idx}) {title} — {price_str}")
-
-    items_block = "Состав заказа:\n" + "\n".join(lines)
-    total_line = f"Итого: {format_price_byn(total)}"
-
-    buyer_block = (
-        f"Покупатель: {user.full_name}\n"
-        f"Username: {username}\n"
-        f"User ID: {user.id}"
-    )
-
-    delivery_block = f"Способ получения: {method}\nДетали:\n{extra_details}"
-
-    contact_line = ""
-    if OWNER_USERNAME:
-        contact_line = f"\n\nДля связи с продавцом: @{OWNER_USERNAME}"
-
-    text_for_channel = (
-        f"Новый заказ #{order_id}\n\n"
-        f"{buyer_block}\n\n"
-        f"{delivery_block}\n\n"
-        f"{items_block}\n{total_line}"
-        f"{contact_line}"
-    )
-
-    text_for_user = (
-        "Ваш заказ принят.\n\n"
-        f"{delivery_block}\n\n"
-        f"{items_block}\n{total_line}"
-        f"{contact_line}"
-    )
-
-    # Отправка в канал
-    try:
-        await context.bot.send_message(
-            chat_id=ORDERS_CHANNEL_ID_INT,
-            text=text_for_channel,
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить заказ в канал: {e}")
-
-    # Сообщение пользователю
-    await update.message.reply_text(
-        text_for_user,
-        reply_markup=main_menu_keyboard(),
-    )
-
-    # Очищаем корзину
-    cart.clear()
-
-    return MAIN_MENU
-
-
 # ---------- ОТПРАВКА ТОВАРОВ ----------
 async def send_products(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    products: List[Dict],
+    update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
     """
-    Показывает товары: состояние + размер + цена BYN + фото + кнопка "Добавить в корзину".
+    Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
     """
     chat_id = update.effective_chat.id
 
@@ -850,27 +540,15 @@ async def send_products(
         desc = row.get("Description") or ""
         cond = row.get("Condition") or ""
         size = row.get("Size") or ""
-        price_raw = row.get("Price") or ""
-        price_str = format_price_byn(price_raw)
-        photo_url = row.get("Photo_url") or None
+        price_raw = row.get("Price")
+        price_text = format_price_byn(price_raw)
+        quantity = row.get("Quantity")  # необязательный столбец
+        photo_id = row.get("Photo_url") or None
         row_id = row.get("ID")
-        qty_raw = row.get("Quantity", "")
 
-        qty_str = ""
-        try:
-            qty_val = float(str(qty_raw).replace(",", "."))
-            if qty_val > 0:
-                # если целое — без .0
-                if abs(qty_val - int(qty_val)) < 1e-9:
-                    qty_str = f"{int(qty_val)} шт."
-                else:
-                    qty_str = f"{qty_val} шт."
-        except ValueError:
-            pass
-
-        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price_str}"
-        if qty_str:
-            text += f"\nВ наличии: {qty_str}"
+        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price_text}"
+        if quantity not in (None, "", "None"):
+            text += f"\nВ наличии: {quantity} шт."
         if desc:
             text += f"\n\nОписание: {desc}"
 
@@ -884,45 +562,287 @@ async def send_products(
             ]
         )
 
-        if photo_url and str(photo_url).lower() != "none":
+        if photo_id and str(photo_id).lower() != "none":
             await context.bot.send_photo(
                 chat_id=chat_id,
-                photo=str(photo_url),
+                photo=str(photo_id),
                 caption=text,
                 reply_markup=keyboard,
             )
         else:
             await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=keyboard,
+                chat_id=chat_id, text=text, reply_markup=keyboard
             )
 
 
-# ---------- CALLBACK ДЛЯ КОРЗИНЫ ----------
+# ---------- КОРЗИНА: ПОКАЗАТЬ ----------
+async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cart = get_cart(context.user_data)
+    chat_id = update.effective_chat.id
+
+    if not cart:
+        await context.bot.send_message(chat_id=chat_id, text="Ваша корзина пока пустая.")
+        return
+
+    total = 0.0
+    for item in cart:
+        total += parse_price_to_float(item.get("Price"))
+
+    # отправляем каждый товар с кнопкой "Удалить"
+    for idx, item in enumerate(cart, start=1):
+        title = item.get("Title") or "Без названия"
+        size = item.get("Size") or ""
+        price_text = format_price_byn(item.get("Price"))
+        text = f"{idx}. {title}\nРазмер: {size}\nЦена: {price_text}"
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "❌ Удалить", callback_data=f"remove_from_cart:{idx-1}"
+                    )
+                ]
+            ]
+        )
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+
+    summary = f"Всего позиций: {len(cart)}\nИтого: {total:.2f} BYN"
+    summary_keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Оформить заказ", callback_data="start_checkout")],
+            [InlineKeyboardButton("Очистить корзину", callback_data="clear_cart")],
+        ]
+    )
+    await context.bot.send_message(
+        chat_id=chat_id, text=summary, reply_markup=summary_keyboard
+    )
+
+
+# ---------- СОЗДАНИЕ ЗАКАЗА ----------
+async def create_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    mode: str,
+    contact_info: str,
+):
+    user = update.effective_user
+    cart = get_cart(context.user_data)
+
+    if not cart:
+        await update.message.reply_text("Корзина пуста, оформлять нечего.")
+        return
+
+    total = 0.0
+    lines = []
+    for idx, item in enumerate(cart, start=1):
+        title = item.get("Title") or "Без названия"
+        size = item.get("Size") or ""
+        price_raw = item.get("Price")
+        price_text = format_price_byn(price_raw)
+        total += parse_price_to_float(price_raw)
+        lines.append(f"{idx}. {title} | размер: {size} | цена: {price_text}")
+
+    cart_text = "\n".join(lines)
+    total_text = f"{total:.2f} BYN"
+
+    # Сообщение пользователю
+    await update.message.reply_text(
+        "Спасибо! Ваш заказ принят.\n"
+        "Мы свяжемся с вами в ближайшее время.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+    # Очищаем корзину
+    context.user_data["cart"] = []
+
+    # Сообщение в канал с заказами
+    if ORDERS_CHANNEL_ID:
+        username = f"@{user.username}" if user.username else "нет username"
+        profile_link = f"tg://user?id={user.id}"
+
+        order_text = (
+            "💥 НОВЫЙ ЗАКАЗ\n\n"
+            f"Покупатель: {username}\n"
+            f"ID: {user.id}\n"
+            f"Профиль: {profile_link}\n\n"
+            f"Способ получения: {mode}\n"
+            f"{contact_info}\n\n"
+            f"Товары:\n{cart_text}\n\n"
+            f"ИТОГО: {total_text}"
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Заказ отправлен",
+                        callback_data=f"order_status:shipped:{user.id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ Аннулировать заказ",
+                        callback_data=f"order_status:canceled:{user.id}",
+                    )
+                ],
+            ]
+        )
+
+        await context.bot.send_message(
+            chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
+        )
+    else:
+        logger.warning("ORDERS_CHANNEL_ID is not set – заказы никуда не отправляются.")
+
+
+# ---------- CALLBACK ДЛЯ КОРЗИНЫ И ЗАКАЗОВ ----------
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data
+    user_data = context.user_data
+
+    # Добавление в корзину
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
         for row in products:
             if norm(row.get("ID")) == row_id:
-                cart = get_cart(context.user_data)
+                cart = get_cart(user_data)
                 cart.append(row)
-                await query.edit_message_reply_markup(reply_markup=None)
                 await query.message.reply_text("Товар добавлен в корзину.")
                 break
         else:
             await query.message.reply_text("Не удалось найти товар в каталоге.")
+        return
+
+    # Удаление из корзины по индексу
+    if data.startswith("remove_from_cart:"):
+        try:
+            index = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+        cart = get_cart(user_data)
+        if 0 <= index < len(cart):
+            removed = cart.pop(index)
+            title = removed.get("Title") or "товар"
+            await query.edit_message_text(f"{title}\n\nУдалён из корзины.")
+        else:
+            await query.edit_message_text("Позиция уже удалена.")
+        return
+
+    # Очистка корзины
+    if data == "clear_cart":
+        user_data["cart"] = []
+        await query.edit_message_text("Корзина очищена.")
+        return
+
+    # Старт оформления заказа
+    if data == "start_checkout":
+        cart = get_cart(user_data)
+        if not cart:
+            await query.edit_message_text("Корзина пуста.")
+            return
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Личная встреча (Минск)", callback_data="checkout_meet"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Доставка почтой", callback_data="checkout_post"
+                    )
+                ],
+            ]
+        )
+        await query.edit_message_text(
+            "Выберите способ получения заказа:", reply_markup=keyboard
+        )
+        return
+
+    # Выбор способа получения
+    if data == "checkout_meet":
+        context.user_data["checkout_state"] = "wait_phone_meet"
+        await query.message.reply_text(
+            "Укажите номер телефона для связи (одним сообщением):"
+        )
+        return
+
+    if data == "checkout_post":
+        context.user_data["checkout_state"] = "wait_post_data"
+        await query.message.reply_text(
+            "Укажите одним сообщением:\n"
+            "ФИО, номер телефона, город, адрес/индекс или номер отделения.",
+        )
+        return
+
+    # Кнопки из канала заказов: отправлен / аннулирован
+    if data.startswith("order_status:"):
+        try:
+            _, status, user_id_str = data.split(":")
+            target_user_id = int(user_id_str)
+        except Exception:
+            return
+
+        if status == "shipped":
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="Ваш заказ оформлен и отправлен ✅",
+            )
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("Статус заказа: отправлен клиенту.")
+        elif status == "canceled":
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="Ваш заказ был аннулирован. Если есть вопросы – напишите нам.",
+            )
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("Статус заказа: аннулирован.")
+        return
+
+
+# ---------- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ fail_id ИЗ КАНАЛА С ФОТО ----------
+async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
+    fail_id: <file_id>
+    """
+    if not PHOTO_CHANNEL_ID:
+        return
+
+    chat = update.effective_chat
+    if chat.id != PHOTO_CHANNEL_ID:
+        return
+
+    if not update.message or not update.message.photo:
+        return
+
+    file_id = update.message.photo[-1].file_id
+    text = f"fail_id:\n{file_id}"
+
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=text,
+        reply_to_message_id=update.message.message_id,
+    )
 
 
 # ----------------- MAIN -----------------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # 0-я группа: общий чек-аут и канал с фото
+    app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler), group=0)
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_text_handler),
+        group=0,
+    )
+
+    # 1-я группа: основной диалог
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -941,30 +861,11 @@ def main():
             SHOES_SIZE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, shoes_size_router)
             ],
-            CART_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cart_menu_router)
-            ],
-            CART_REMOVE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cart_remove_router)
-            ],
-            CHECKOUT_METHOD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_method_router)
-            ],
-            CHECKOUT_MEET_PHONE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, checkout_meet_phone_router
-                )
-            ],
-            CHECKOUT_POST_DETAILS: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, checkout_post_details_router
-                )
-            ],
         },
         fallbacks=[CommandHandler("start", start)],
     )
 
-    app.add_handler(conv_handler)
+    app.add_handler(conv_handler, group=1)
     app.add_handler(CallbackQueryHandler(callback_query_handler))
 
     app.run_polling()
