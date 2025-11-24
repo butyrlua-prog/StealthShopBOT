@@ -56,7 +56,7 @@ def load_products() -> List[Dict]:
     Читаем все товары из таблицы как список словарей.
     Ожидаются столбцы:
     ID, Gender, Main_category, Subcategory, Size_group,
-    Size, Title, Description, Condition, Price, Photo_url
+    Size, Title, Description, Condition, Price, Photo_id (или Photo_url)
     """
     rows = sheet.get_all_records()
     return rows
@@ -102,8 +102,7 @@ def filter_products(
         if n_main and norm(row.get("Main_category")) != n_main:
             continue
 
-        # Пол: если в фильтре указан муж/жен, пропускаем только совпадающие
-        # либо Unisex. Для обуви gender=None — не фильтруем.
+        # Пол
         row_gender = norm(row.get("Gender"))
         if n_gender:
             if row_gender not in (n_gender, "unisex", ""):
@@ -113,7 +112,7 @@ def filter_products(
         if n_sub and norm(row.get("Subcategory")) != n_sub:
             continue
 
-        # Группа размеров (например, "Обувь", "Одежда")
+        # Группа размеров
         if n_group and norm(row.get("Size_group")) != n_group:
             continue
 
@@ -169,8 +168,8 @@ def shoes_size_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-# Размерная сетка одежды XS–XXL
 def clothes_size_keyboard() -> ReplyKeyboardMarkup:
+    """Размерная сетка одежды XS–XXL."""
     sizes = ["XS", "S", "M", "L", "XL", "XXL"]
     rows = [list(map(KeyboardButton, sizes))]
     rows.append([KeyboardButton("Назад к категориям")])
@@ -236,8 +235,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WOMEN_MENU
 
     if text == "Обувь":
-        # Для обуви gender не фильтруем
-        context.user_data["gender"] = None
+        context.user_data["gender"] = None  # обувь может быть unisex
         await update.message.reply_text(
             "Обувь. Выберите тип:", reply_markup=shoes_type_keyboard()
         )
@@ -258,21 +256,20 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return MAIN_MENU
 
         lines = []
-        total = 0
+        total = 0.0
         for item in cart:
-            price = item.get("Price") or 0
+            price_raw = str(item.get("Price") or "").lower().replace("byn", "").strip()
             try:
-                price_val = float(str(price).replace(",", "."))
+                price_val = float(price_raw.replace(",", "."))
             except ValueError:
-                price_val = 0
+                price_val = 0.0
             total += price_val
-            # тут добавил BYN
-            lines.append(f"{item.get('Title')} — {price} BYN")
+            lines.append(f"{item.get('Title')} — {price_val} BYN")
 
         text_cart = (
             "Ваша корзина:\n\n"
             + "\n".join(lines)
-            + f"\n\nИтого: {total} BYN"
+            + f"\n\nИтого: {round(total, 2)} BYN"
         )
         await update.message.reply_text(text_cart)
         return MAIN_MENU
@@ -311,6 +308,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
+    # выбор размера
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -450,7 +448,7 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subcategory=subcat,
         size_group="Обувь",
         size=text,
-        gender=None,
+        gender=None,  # не фильтруем по полу
     )
 
     if not products:
@@ -470,6 +468,8 @@ async def send_products(
 ):
     """
     Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
+    Фото берётся по file_id из столбца Photo_id (если есть),
+    иначе пробуем как URL из Photo_url.
     """
     chat_id = update.effective_chat.id
 
@@ -478,12 +478,20 @@ async def send_products(
         desc = row.get("Description") or ""
         cond = row.get("Condition") or ""
         size = row.get("Size") or ""
-        price = row.get("Price") or ""
-        photo_url = row.get("Photo_url") or None
+        price_raw = str(row.get("Price") or "")
+
+        # Чистим цену и добавляем BYN
+        clean_price = price_raw.lower().replace("byn", "").strip()
+        price_text = f"{clean_price} BYN" if clean_price else "—"
+
+        # file_id из таблицы
+        photo_id = row.get("Photo_id") or row.get("Photo_file_id")
+        # на всякий случай поддерживаем старый вариант с URL
+        photo_url = row.get("Photo_url")
+
         row_id = row.get("ID")
 
-        # тут добавил BYN
-        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price} BYN"
+        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price_text}"
         if desc:
             text += f"\n\nОписание: {desc}"
 
@@ -497,7 +505,12 @@ async def send_products(
             ]
         )
 
-        if photo_url and str(photo_url).lower() != "none":
+        # сначала пробуем отправить по file_id
+        if photo_id and str(photo_id).lower() != "none":
+            await context.bot.send_photo(
+                chat_id=chat_id, photo=str(photo_id), caption=text, reply_markup=keyboard
+            )
+        elif photo_url and str(photo_url).lower() != "none":
             await context.bot.send_photo(
                 chat_id=chat_id, photo=str(photo_url), caption=text, reply_markup=keyboard
             )
@@ -525,6 +538,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 break
         else:
             await query.message.reply_text("Не удалось найти товар в каталоге.")
+
+
+# ---------- ХЕЛПЕР: ВЫВОД file_id ДЛЯ ФОТО ----------
+async def photo_id_helper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Любое фото, отправленное боту в личку,
+    бот отвечает его file_id. Это значение записываешь в столбец Photo_id.
+    """
+    if not update.message.photo:
+        return
+
+    file_id = update.message.photo[-1].file_id
+    await update.message.reply_text(f"file_id: {file_id}")
 
 
 # ----------------- MAIN -----------------
@@ -555,6 +581,9 @@ def main():
 
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(callback_query_handler))
+
+    # Отдельный хендлер для получения file_id фото
+    app.add_handler(MessageHandler(filters.PHOTO, photo_id_helper))
 
     app.run_polling()
 
