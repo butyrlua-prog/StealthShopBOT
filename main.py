@@ -169,7 +169,7 @@ def shoes_size_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-# Размерная сетка одежды XS–XXL без XXXL
+# Размерная сетка одежды XS–XXL
 def clothes_size_keyboard() -> ReplyKeyboardMarkup:
     sizes = ["XS", "S", "M", "L", "XL", "XXL"]
     rows = [list(map(KeyboardButton, sizes))]
@@ -183,6 +183,58 @@ MAIN_MENU, MEN_MENU, WOMEN_MENU, SHOES_TYPE, SHOES_SIZE = range(5)
 # ----------------- КОРЗИНА -----------------
 def get_cart(user_data: dict) -> List[Dict]:
     return user_data.setdefault("cart", [])
+
+
+async def send_cart_summary(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_data: dict,
+):
+    """
+    Показывает корзину:
+    - список товаров с нумерацией
+    - итоговую сумму
+    - инлайн-кнопки: удалить позицию, оформить заказ
+    """
+    cart = get_cart(user_data)
+
+    if not cart:
+        await context.bot.send_message(chat_id=chat_id, text="Ваша корзина пока пустая.")
+        return
+
+    lines = []
+    total = 0.0
+    for idx, item in enumerate(cart, start=1):
+        title = item.get("Title") or "Без названия"
+        price_raw = item.get("Price") or 0
+
+        try:
+            price_val = float(str(price_raw).replace(",", "."))
+        except ValueError:
+            price_val = 0.0
+
+        total += price_val
+        lines.append(f"{idx}. {title} — {price_raw}")
+
+    text_cart = "Ваша корзина:\n\n" + "\n".join(lines) + f"\n\nИтого: {total}"
+
+    # Кнопки: удалить по номеру + оформить заказ
+    buttons = []
+    for idx, _item in enumerate(cart):
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"Удалить {idx + 1}",
+                    callback_data=f"remove_from_cart:{idx}",
+                )
+            ]
+        )
+
+    buttons.append([InlineKeyboardButton("Оформить заказ", callback_data="checkout")])
+
+    markup = InlineKeyboardMarkup(buttons)
+
+    await context.bot.send_message(chat_id=chat_id, text=text_cart, reply_markup=markup)
 
 
 # ----------------- ХЕНДЛЕРЫ -----------------
@@ -250,26 +302,11 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     if text == "Моя корзина":
-        cart = get_cart(context.user_data)
-        if not cart:
-            await update.message.reply_text("Ваша корзина пока пустая.")
-            return MAIN_MENU
-
-        lines = []
-        total = 0
-        for item in cart:
-            price = item.get("Price") or 0
-            try:
-                price_val = float(str(price).replace(",", "."))
-            except ValueError:
-                price_val = 0
-            total += price_val
-            lines.append(f"{item.get('Title')} — {price} BYN")
-
-        text_cart = (
-            "Ваша корзина:\n\n" + "\n".join(lines) + f"\n\nИтого: {total} BYN"
+        await send_cart_summary(
+            update.effective_chat.id,
+            context,
+            context.user_data,
         )
-        await update.message.reply_text(text_cart)
         return MAIN_MENU
 
     await update.message.reply_text(
@@ -290,6 +327,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
+    # Выбор подкатегории
     if text in (
         "Сумки | Рюкзаки",
         "Верхняя одежда",
@@ -306,6 +344,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
+    # Выбор размера одежды
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -465,7 +504,7 @@ async def send_products(
     update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
     """
-    Показывает товары: описание + состояние + цена + размер + фото + кнопка "Добавить в корзину"
+    Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
     """
     chat_id = update.effective_chat.id
 
@@ -478,7 +517,7 @@ async def send_products(
         photo_url = row.get("Photo_url") or None
         row_id = row.get("ID")
 
-        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price} BYN"
+        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price}"
         if desc:
             text += f"\n\nОписание: {desc}"
 
@@ -508,6 +547,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     data = query.data
+
+    # Добавление в корзину
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
@@ -520,23 +561,58 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 break
         else:
             await query.message.reply_text("Не удалось найти товар в каталоге.")
-
-
-# ---------- ХЕНДЛЕР ДЛЯ ФОТО (fail_id в канал/чат) ----------
-async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Любое фото (в личке, группе, канале) — бот отвечает под этим фото
-    и пишет fail_id: <file_id>.
-    """
-    msg = update.effective_message
-    if not msg or not msg.photo:
         return
 
-    # Берём самый большой вариант фото
-    file_id = msg.photo[-1].file_id
+    # Удаление из корзины по индексу
+    if data.startswith("remove_from_cart:"):
+        idx_str = data.split(":", 1)[1]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            await query.message.reply_text("Не удалось понять, какую позицию удалить.")
+            return
 
-    # Отвечаем в том же чате под фото
-    await msg.reply_text(f"fail_id: {file_id}")
+        cart = get_cart(context.user_data)
+        if 0 <= idx < len(cart):
+            del cart[idx]
+            await query.message.reply_text("Позиция удалена из корзины.")
+        else:
+            await query.message.reply_text("Такой позиции в корзине нет.")
+
+        await send_cart_summary(query.message.chat_id, context, context.user_data)
+        return
+
+    # Оформление заказа
+    if data == "checkout":
+        cart = get_cart(context.user_data)
+        if not cart:
+            await query.message.reply_text("Ваша корзина уже пустая.")
+            return
+
+        lines = []
+        total = 0.0
+        for idx, item in enumerate(cart, start=1):
+            title = item.get("Title") or "Без названия"
+            price_raw = item.get("Price") or 0
+            try:
+                price_val = float(str(price_raw).replace(",", "."))
+            except ValueError:
+                price_val = 0.0
+            total += price_val
+            lines.append(f"{idx}. {title} — {price_raw}")
+
+        text_order = (
+            "Ваш заказ:\n\n"
+            + "\n".join(lines)
+            + f"\n\nИтого: {total}\n\n"
+            "Отправьте, пожалуйста, одним сообщением ваши контактные данные (имя, телефон, способ получения)."
+        )
+
+        # очищаем корзину после оформления
+        cart.clear()
+
+        await query.message.reply_text(text_order)
+        return
 
 
 # ----------------- MAIN -----------------
@@ -567,9 +643,6 @@ def main():
 
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(callback_query_handler))
-
-    # Хендлер для всех фото (и в личке, и в канале)
-    app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler))
 
     app.run_polling()
 
