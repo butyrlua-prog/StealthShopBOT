@@ -131,7 +131,7 @@ def filter_products(
         if n_group and norm(row.get("Size_group")) != n_group:
             continue
 
-        # Конкретный размер
+        # Размер
         if n_size and norm(row.get("Size")) != n_size:
             continue
 
@@ -152,7 +152,7 @@ def format_price_byn(price_raw) -> str:
     s = str(price_raw).strip()
     if not s:
         return "не указана"
-    # если пользователь сам дописал BYN – второй раз не дублируем
+    # если пользователь случайно сам дописал BYN – второй раз не дублируем
     if "byn" in s.lower():
         return s
     return f"{s} BYN"
@@ -234,35 +234,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА ----------
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
 async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает текст, когда пользователь уже выбрал способ получения
-    и бот ждёт от него данных.
-    Работает ДО ConversationHandler (group=0).
-    """
     state = context.user_data.get("checkout_state")
     if not state:
         return
 
-    text = update.message.text.strip()
+    text = update.effective_message.text.strip()
     user = update.effective_user
 
     if state == "wait_phone_meet":
         context.user_data["checkout_state"] = None
         contact_info = f"Телефон (личная встреча): {text}"
-        await create_order(
-            update, context, mode="Личная встреча (Минск)", contact_info=contact_info
-        )
+        await create_order(update, context, mode="Личная встреча (Минск)", contact_info=contact_info)
         logger.info("User %s finished checkout (meet)", user.id)
         return
 
     if state == "wait_post_data":
         context.user_data["checkout_state"] = None
         contact_info = f"Доставка почтой. Данные:\n{text}"
-        await create_order(
-            update, context, mode="Доставка почтой", contact_info=contact_info
-        )
+        await create_order(update, context, mode="Доставка почтой", contact_info=contact_info)
         logger.info("User %s finished checkout (post)", user.id)
         return
 
@@ -527,9 +518,6 @@ async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_products(
     update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
-    """
-    Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
-    """
     chat_id = update.effective_chat.id
 
     for row in products:
@@ -625,7 +613,7 @@ async def create_order(
     cart = get_cart(context.user_data)
 
     if not cart:
-        await update.message.reply_text("Корзина пуста, оформлять нечего.")
+        await update.effective_message.reply_text("Корзина пуста, оформлять нечего.")
         return
 
     total = 0.0
@@ -641,7 +629,7 @@ async def create_order(
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
@@ -797,43 +785,36 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
     fail_id: <file_id>
-
-    Работает и для каналов, и для лички/чатов.
+    Работает и для channel_post, и для обычных сообщений.
     """
     if not PHOTO_CHANNEL_ID:
         return
 
-    # Сообщение с фото может быть в message (чаты) или channel_post (каналы)
-    msg = update.effective_message
-    if msg is None or not msg.photo:
+    msg = update.effective_message  # В канале это channel_post, в чате — message
+    if not msg or not msg.photo:
         return
 
-    # Проверяем, что это именно нужный канал
     if msg.chat.id != PHOTO_CHANNEL_ID:
         return
 
     file_id = msg.photo[-1].file_id
     text = f"fail_id:\n{file_id}"
 
-    # Ответом под тем же постом
-    await context.bot.send_message(
-        chat_id=msg.chat.id,
-        text=text,
-        reply_to_message_id=msg.message_id,
-    )
-    
+    await msg.reply_text(text)
+
+
 # ----------------- MAIN -----------------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # group=0: глобальный чек-аут и обработка фото в канале
+    # 0-я группа: общий чек-аут и канал с фото
     app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler), group=0)
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_text_handler),
         group=0,
     )
 
-    # group=1: основной диалог
+    # 1-я группа: основной диалог
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
