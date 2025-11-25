@@ -20,6 +20,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
     ContextTypes,
+    ApplicationHandlerStop,
     filters,
 )
 
@@ -250,16 +251,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА ----------
 async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает текст, когда пользователь уже выбрал способ получения
-    и бот ждёт от него данных.
-    Работает ДО ConversationHandler (group=0).
+    и бот ждёт от него данных (телефон / почтовые данные).
+    Работает ДО ConversationHandler (group=0) и останавливает дальнейшую обработку.
     """
     state = context.user_data.get("checkout_state")
     if not state:
-        return
+        return  # не в процессе оформления заказа
 
     text = update.message.text.strip()
     user = update.effective_user
@@ -274,7 +275,7 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             contact_info=contact_info,
         )
         logger.info("User %s finished checkout (meet)", user.id)
-        return
+        raise ApplicationHandlerStop()
 
     if state == "wait_post_data":
         context.user_data["checkout_state"] = None
@@ -286,17 +287,12 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             contact_info=contact_info,
         )
         logger.info("User %s finished checkout (post)", user.id)
-        return
+        raise ApplicationHandlerStop()
 
 
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
-    # если идёт оформление заказа – игнорируем текст здесь,
-    # всё уже обрабатывается в checkout_text_handler
-    if context.user_data.get("checkout_state"):
-        return MAIN_MENU
 
     if text == "Мужская одежда":
         context.user_data["gender"] = "Муж"
@@ -722,30 +718,38 @@ async def create_order(
 
     total = 0.0
     lines = []
+    photo_ids: List[str] = []
+
     for idx, item in enumerate(cart, start=1):
-        row_id = item.get("ID")
         title = item.get("Title") or "Без названия"
         size = item.get("Size") or ""
         price_raw = item.get("Price")
         price_text = format_price_byn(price_raw)
         total += parse_price_to_float(price_raw)
+
+        row_id = item.get("ID") or "?"
         lines.append(
             f"{idx}. ID: {row_id} | {title} | размер: {size} | цена: {price_text}"
         )
 
+        p = item.get("Photo_url")
+        if p and str(p).lower() != "none":
+            photo_ids.append(str(p))
+
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
+    # Сообщение пользователю
     await update.message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
     )
 
-    # сохраняем копию корзины до очистки для отправки фотографий
-    cart_copy = list(cart)
+    # Очищаем корзину
     context.user_data["cart"] = []
 
+    # Сообщение в канал с заказами
     if ORDERS_CHANNEL_ID:
         username = f"@{user.username}" if user.username else "нет username"
         profile_link = f"tg://user?id={user.id}"
@@ -765,8 +769,8 @@ async def create_order(
             [
                 [
                     InlineKeyboardButton(
-                        "Связаться с покупателем для закрытия заказа",
-                        callback_data=f"order_status:contact:{user.id}",
+                        "✅ Заказ закрыт",
+                        callback_data=f"order_status:closed:{user.id}",
                     )
                 ],
                 [
@@ -778,23 +782,28 @@ async def create_order(
             ]
         )
 
-        await context.bot.send_message(
-            chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
-        )
+        # Если есть хотя бы одно фото — делаем главный пост как фото+caption
+        if photo_ids:
+            first_photo = photo_ids[0]
+            await context.bot.send_photo(
+                chat_id=ORDERS_CHANNEL_ID,
+                photo=first_photo,
+                caption=order_text,
+                reply_markup=keyboard,
+            )
 
-        # Отправляем фото каждой позиции
-        for idx, item in enumerate(cart_copy, start=1):
-            photo_id = item.get("Photo_url") or None
-            if photo_id and str(photo_id).lower() != "none":
-                caption = (
-                    f"Товар #{idx} (ID: {item.get('ID')})\n"
-                    f"{item.get('Title') or 'Без названия'}"
-                )
+            # Остальные фото (если больше одного товара) просто добиваем ниже
+            for idx, extra_photo in enumerate(photo_ids[1:], start=2):
                 await context.bot.send_photo(
                     chat_id=ORDERS_CHANNEL_ID,
-                    photo=str(photo_id),
-                    caption=caption,
+                    photo=extra_photo,
+                    caption=f"Товар #{idx}",
                 )
+        else:
+            # Фото нет — обычное текстовое сообщение
+            await context.bot.send_message(
+                chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
+            )
     else:
         logger.warning("ORDERS_CHANNEL_ID is not set – заказы никуда не отправляются.")
 
@@ -886,35 +895,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             return
 
-        # 1. Связаться с покупателем
-        if status == "contact":
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text="Продавец скоро свяжется с вами для определения дальнейших действий.",
-            )
-
-            new_keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "✅ Заказ закрыт",
-                            callback_data=f"order_status:closed:{target_user_id}",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "❌ Аннулировать заказ",
-                            callback_data=f"order_status:canceled:{target_user_id}",
-                        )
-                    ],
-                ]
-            )
-
-            await query.edit_message_reply_markup(reply_markup=new_keyboard)
-            await query.message.reply_text("Отметка: связь с покупателем запрошена.")
-            return
-
-        # 2. Заказ закрыт (покупка состоялась)
+        # 1. Заказ закрыт (покупка состоялась)
         if status == "closed":
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -924,12 +905,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Заказ отмечен как закрытый.")
             return
 
-        # 3. Аннулировать заказ
+        # 2. Аннулировать заказ
         if status == "canceled":
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text="Ваш заказ был аннулирован. "
-                     "Если есть вопросы – напишите нам.",
+                text=(
+                    "Ваш заказ был аннулирован. "
+                    "Если есть вопросы – напишите нам."
+                ),
             )
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("Статус заказа: аннулирован.")
