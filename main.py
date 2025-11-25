@@ -250,7 +250,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА ----------
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
 async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает текст, когда пользователь уже выбрал способ получения
@@ -273,6 +273,8 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             mode="Личная встреча (Минск)",
             contact_info=contact_info,
         )
+        # запрещаем следующему обработчику меню реагировать на это же сообщение
+        context.user_data["suppress_next_menu_message"] = True
         logger.info("User %s finished checkout (meet)", user.id)
         return
 
@@ -285,12 +287,17 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             mode="Доставка почтой",
             contact_info=contact_info,
         )
+        context.user_data["suppress_next_menu_message"] = True
         logger.info("User %s finished checkout (post)", user.id)
         return
 
 
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # если только что оформили заказ — игнорируем это сообщение (оно уже обработано)
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Мужская одежда":
@@ -378,6 +385,9 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- МУЖСКАЯ ОДЕЖДА ----------
 async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
     gender = "Муж"
 
@@ -437,6 +447,9 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ЖЕНСКАЯ ОДЕЖДА ----------
 async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
     gender = "Жен"
 
@@ -496,6 +509,9 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- АКСЕССУАРЫ ----------
 async def accessories_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад в меню":
@@ -539,6 +555,9 @@ async def accessories_menu_router(update: Update, context: ContextTypes.DEFAULT_
 
 # ---------- ОБУВЬ: ТИП ----------
 async def shoes_type_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад в меню":
@@ -566,6 +585,9 @@ async def shoes_type_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ОБУВЬ: РАЗМЕР ----------
 async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад к категориям":
@@ -630,7 +652,13 @@ async def send_products(
         photo_id = row.get("Photo_url") or None
         row_id = row.get("ID")
 
-        text = f"{title}\n\nСостояние: {cond}\nРазмер: {size}\nЦена: {price_text}"
+        text = (
+            f"ID товара: {row_id}\n"
+            f"{title}\n\n"
+            f"Состояние: {cond}\n"
+            f"Размер: {size}\n"
+            f"Цена: {price_text}"
+        )
         if quantity not in (None, "", "None"):
             text += f"\nВ наличии: {quantity} шт."
         if desc:
@@ -676,7 +704,11 @@ async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = item.get("Title") or "Без названия"
         size = item.get("Size") or ""
         price_text = format_price_byn(item.get("Price"))
-        text = f"{idx}. {title}\nРазмер: {size}\nЦена: {price_text}"
+        row_id = item.get("ID") or ""
+        text = (
+            f"{idx}. ID: {row_id}\n"
+            f"{title}\nРазмер: {size}\nЦена: {price_text}"
+        )
 
         keyboard = InlineKeyboardMarkup(
             [
@@ -722,20 +754,28 @@ async def create_order(
         size = item.get("Size") or ""
         price_raw = item.get("Price")
         price_text = format_price_byn(price_raw)
+        row_id = item.get("ID") or ""
         total += parse_price_to_float(price_raw)
-        lines.append(f"{idx}. {title} | размер: {size} | цена: {price_text}")
+        lines.append(
+            f"{idx}. ID: {row_id} | {title} | размер: {size} | цена: {price_text}"
+        )
 
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
+    # Сообщение пользователю
     await update.message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
     )
 
+    # Очищаем корзину в user_data,
+    # но локальная переменная cart остаётся со списком товаров —
+    # мы используем её ниже, чтобы отправить фото в канал заказов.
     context.user_data["cart"] = []
 
+    # Сообщение в канал с заказами
     if ORDERS_CHANNEL_ID:
         username = f"@{user.username}" if user.username else "нет username"
         profile_link = f"tg://user?id={user.id}"
@@ -743,7 +783,7 @@ async def create_order(
         order_text = (
             "💥 НОВЫЙ ЗАКАЗ\n\n"
             f"Покупатель: {username}\n"
-            f"ID: {user.id}\n"
+            f"ID пользователя: {user.id}\n"
             f"Профиль: {profile_link}\n\n"
             f"Способ получения: {mode}\n"
             f"{contact_info}\n\n"
@@ -768,9 +808,28 @@ async def create_order(
             ]
         )
 
+        # Основной текстовый пост с заказом
         await context.bot.send_message(
             chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
         )
+
+        # Дополнительно — фото каждой позиции отдельными сообщениями
+        for idx, item in enumerate(cart, start=1):
+            photo_id = item.get("Photo_url") or None
+            if photo_id and str(photo_id).lower() != "none":
+                title = item.get("Title") or "Без названия"
+                size = item.get("Size") or ""
+                price_text = format_price_byn(item.get("Price"))
+                row_id = item.get("ID") or ""
+                caption = (
+                    f"{idx}. ID: {row_id}\n"
+                    f"{title}\nРазмер: {size}\nЦена: {price_text}"
+                )
+                await context.bot.send_photo(
+                    chat_id=ORDERS_CHANNEL_ID,
+                    photo=str(photo_id),
+                    caption=caption,
+                )
     else:
         logger.warning("ORDERS_CHANNEL_ID is not set – заказы никуда не отправляются.")
 
@@ -917,24 +976,25 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
     fail_id: <file_id>
-    Работает и в канале, и в личном чате (через effective_message).
     """
     if not PHOTO_CHANNEL_ID:
         return
 
     chat = update.effective_chat
-    if not chat or chat.id != PHOTO_CHANNEL_ID:
+    if chat.id != PHOTO_CHANNEL_ID:
         return
 
-    msg = update.effective_message
-    if not msg or not msg.photo:
+    if not update.message or not update.message.photo:
         return
 
-    file_id = msg.photo[-1].file_id
+    file_id = update.message.photo[-1].file_id
     text = f"fail_id:\n{file_id}"
 
-    # простой ответ-реплай под фото
-    await msg.reply_text(text)
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=text,
+        reply_to_message_id=update.message.message_id,
+    )
 
 
 # ----------------- MAIN -----------------
@@ -944,11 +1004,7 @@ def main():
     # 0-я группа: общий чек-аут и канал с фото
     app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler), group=0)
     app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            checkout_text_handler,
-            block=True,  # чтобы не было "Не понял команду" после ввода телефона/адреса
-        ),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_text_handler),
         group=0,
     )
 
