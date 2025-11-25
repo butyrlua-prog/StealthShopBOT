@@ -142,7 +142,7 @@ def filter_products(
 
 def chunk_list(lst: List[str], n: int) -> List[List[str]]:
     """Разбивает список на подсписки длины n."""
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
+    return [lst[i: i + n] for i in range(0, len(lst), n)]
 
 
 def format_price_byn(price_raw) -> str:
@@ -292,6 +292,11 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+
+    # если идёт оформление заказа – игнорируем текст здесь,
+    # всё уже обрабатывается в checkout_text_handler
+    if context.user_data.get("checkout_state"):
+        return MAIN_MENU
 
     if text == "Мужская одежда":
         context.user_data["gender"] = "Муж"
@@ -718,12 +723,15 @@ async def create_order(
     total = 0.0
     lines = []
     for idx, item in enumerate(cart, start=1):
+        row_id = item.get("ID")
         title = item.get("Title") or "Без названия"
         size = item.get("Size") or ""
         price_raw = item.get("Price")
         price_text = format_price_byn(price_raw)
         total += parse_price_to_float(price_raw)
-        lines.append(f"{idx}. {title} | размер: {size} | цена: {price_text}")
+        lines.append(
+            f"{idx}. ID: {row_id} | {title} | размер: {size} | цена: {price_text}"
+        )
 
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
@@ -734,6 +742,8 @@ async def create_order(
         reply_markup=main_menu_keyboard(),
     )
 
+    # сохраняем копию корзины до очистки для отправки фотографий
+    cart_copy = list(cart)
     context.user_data["cart"] = []
 
     if ORDERS_CHANNEL_ID:
@@ -771,6 +781,20 @@ async def create_order(
         await context.bot.send_message(
             chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
         )
+
+        # Отправляем фото каждой позиции
+        for idx, item in enumerate(cart_copy, start=1):
+            photo_id = item.get("Photo_url") or None
+            if photo_id and str(photo_id).lower() != "none":
+                caption = (
+                    f"Товар #{idx} (ID: {item.get('ID')})\n"
+                    f"{item.get('Title') or 'Без названия'}"
+                )
+                await context.bot.send_photo(
+                    chat_id=ORDERS_CHANNEL_ID,
+                    photo=str(photo_id),
+                    caption=caption,
+                )
     else:
         logger.warning("ORDERS_CHANNEL_ID is not set – заказы никуда не отправляются.")
 
