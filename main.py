@@ -21,7 +21,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
-    StopPropagation,   # <--- добавлено, чтобы глушить "не понял команду"
 )
 
 # ----------------- ЛОГИ -----------------
@@ -143,7 +142,7 @@ def filter_products(
 
 def chunk_list(lst: List[str], n: int) -> List[List[str]]:
     """Разбивает список на подсписки длины n."""
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
+    return [lst[i: i + n] for i in range(0, len(lst), n)]
 
 
 def format_price_byn(price_raw) -> str:
@@ -274,9 +273,10 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             mode="Личная встреча (Минск)",
             contact_info=contact_info,
         )
+        # запрещаем следующему обработчику меню реагировать на это же сообщение
+        context.user_data["suppress_next_menu_message"] = True
         logger.info("User %s finished checkout (meet)", user.id)
-        # Глушим дальнейшую обработку этого апдейта — чтобы не было "Не понял команду"
-        raise StopPropagation()
+        return
 
     if state == "wait_post_data":
         context.user_data["checkout_state"] = None
@@ -287,13 +287,17 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             mode="Доставка почтой",
             contact_info=contact_info,
         )
+        context.user_data["suppress_next_menu_message"] = True
         logger.info("User %s finished checkout (post)", user.id)
-        # Глушим дальнейшую обработку этого апдейта
-        raise StopPropagation()
+        return
 
 
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # если только что оформили заказ — игнорируем это сообщение (оно уже обработано)
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Мужская одежда":
@@ -381,6 +385,9 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- МУЖСКАЯ ОДЕЖДА ----------
 async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
     gender = "Муж"
 
@@ -440,6 +447,9 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ЖЕНСКАЯ ОДЕЖДА ----------
 async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
     gender = "Жен"
 
@@ -499,6 +509,9 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- АКСЕССУАРЫ ----------
 async def accessories_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад в меню":
@@ -542,6 +555,9 @@ async def accessories_menu_router(update: Update, context: ContextTypes.DEFAULT_
 
 # ---------- ОБУВЬ: ТИП ----------
 async def shoes_type_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад в меню":
@@ -569,6 +585,9 @@ async def shoes_type_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ОБУВЬ: РАЗМЕР ----------
 async def shoes_size_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("suppress_next_menu_message", None):
+        return MAIN_MENU
+
     text = update.message.text.strip()
 
     if text == "Назад к категориям":
@@ -633,7 +652,13 @@ async def send_products(
         photo_id = row.get("Photo_url") or None
         row_id = row.get("ID")
 
-        text = f"{title}\n\nID товара: {row_id}\nСостояние: {cond}\nРазмер: {size}\nЦена: {price_text}"
+        text = (
+            f"ID товара: {row_id}\n"
+            f"{title}\n\n"
+            f"Состояние: {cond}\n"
+            f"Размер: {size}\n"
+            f"Цена: {price_text}"
+        )
         if quantity not in (None, "", "None"):
             text += f"\nВ наличии: {quantity} шт."
         if desc:
@@ -680,7 +705,10 @@ async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size = item.get("Size") or ""
         price_text = format_price_byn(item.get("Price"))
         row_id = item.get("ID") or ""
-        text = f"{idx}. ID: {row_id}\n{title}\nРазмер: {size}\nЦена: {price_text}"
+        text = (
+            f"{idx}. ID: {row_id}\n"
+            f"{title}\nРазмер: {size}\nЦена: {price_text}"
+        )
 
         keyboard = InlineKeyboardMarkup(
             [
@@ -735,16 +763,19 @@ async def create_order(
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
+    # Сообщение пользователю
     await update.message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
     )
 
-    # Делаем копию корзины, чтобы использовать её для фото, а потом уже чистить
-    cart_copy = list(cart)
+    # Очищаем корзину в user_data,
+    # но локальная переменная cart остаётся со списком товаров —
+    # мы используем её ниже, чтобы отправить фото в канал заказов.
     context.user_data["cart"] = []
 
+    # Сообщение в канал с заказами
     if ORDERS_CHANNEL_ID:
         username = f"@{user.username}" if user.username else "нет username"
         profile_link = f"tg://user?id={user.id}"
@@ -752,7 +783,7 @@ async def create_order(
         order_text = (
             "💥 НОВЫЙ ЗАКАЗ\n\n"
             f"Покупатель: {username}\n"
-            f"ID: {user.id}\n"
+            f"ID пользователя: {user.id}\n"
             f"Профиль: {profile_link}\n\n"
             f"Способ получения: {mode}\n"
             f"{contact_info}\n\n"
@@ -777,28 +808,28 @@ async def create_order(
             ]
         )
 
-        # 1. Сообщение с текстом заказа и кнопками
+        # Основной текстовый пост с заказом
         await context.bot.send_message(
             chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
         )
 
-        # 2. Отдельно — фото каждого товара
-        for idx, item in enumerate(cart_copy, start=1):
+        # Дополнительно — фото каждой позиции отдельными сообщениями
+        for idx, item in enumerate(cart, start=1):
             photo_id = item.get("Photo_url") or None
-            if not photo_id or str(photo_id).lower() == "none":
-                continue
-
-            title = item.get("Title") or "Без названия"
-            size = item.get("Size") or ""
-            row_id = item.get("ID") or ""
-            caption = f"{idx}. ID: {row_id}\n{title}\nРазмер: {size}"
-
-            await context.bot.send_photo(
-                chat_id=ORDERS_CHANNEL_ID,
-                photo=str(photo_id),
-                caption=caption,
-            )
-
+            if photo_id and str(photo_id).lower() != "none":
+                title = item.get("Title") or "Без названия"
+                size = item.get("Size") or ""
+                price_text = format_price_byn(item.get("Price"))
+                row_id = item.get("ID") or ""
+                caption = (
+                    f"{idx}. ID: {row_id}\n"
+                    f"{title}\nРазмер: {size}\nЦена: {price_text}"
+                )
+                await context.bot.send_photo(
+                    chat_id=ORDERS_CHANNEL_ID,
+                    photo=str(photo_id),
+                    caption=caption,
+                )
     else:
         logger.warning("ORDERS_CHANNEL_ID is not set – заказы никуда не отправляются.")
 
