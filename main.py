@@ -984,18 +984,20 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.id != PHOTO_CHANNEL_ID:
         return
 
-    if not update.message or not update.message.photo:
+    # Берём единое сообщение для ЛС/групп/каналов
+    msg = update.effective_message
+    if not msg or not msg.photo:
         return
 
-    file_id = update.message.photo[-1].file_id
+    file_id = msg.photo[-1].file_id
     text = f"fail_id:\n{file_id}"
 
+    # Отвечаем прямо под этим фото в канале
     await context.bot.send_message(
         chat_id=chat.id,
         text=text,
-        reply_to_message_id=update.message.message_id,
+        reply_to_message_id=msg.message_id,
     )
-
 
 # ----------------- MAIN -----------------
 def main():
