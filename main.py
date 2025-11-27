@@ -181,6 +181,26 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
+def men_categories_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton("Сумки | Рюкзаки"), KeyboardButton("Верхняя одежда")],
+        [KeyboardButton("Футболки"), KeyboardButton("Головные уборы")],
+        [KeyboardButton("Штаны | Шорты")],
+        [KeyboardButton("Назад в меню")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def women_categories_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton("Сумки"), KeyboardButton("Головные уборы")],
+        [KeyboardButton("Футболки | Топы"), KeyboardButton("Верхняя одежда")],
+        [KeyboardButton("Штаны | Шорты")],
+        [KeyboardButton("Назад в меню")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
 def shoes_type_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("Кроссовки"), KeyboardButton("Кеды")],
@@ -250,8 +270,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
-# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА ----------
+# ---------- ГЛОБАЛЬНЫЙ ХЕНДЛЕР ЧЕКАУТА (ПОСЛЕ НАЖАТИЯ КНОПОК) ----------
 async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает текст, когда пользователь уже выбрал способ получения
+    и бот ждёт от него данных.
+    Работает ДО ConversationHandler (group=0).
+    """
     state = context.user_data.get("checkout_state")
     if not state:
         return
@@ -268,6 +293,7 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             mode="Личная встреча (Минск)",
             contact_info=contact_info,
         )
+        # запрещаем следующему обработчику меню реагировать на это же сообщение
         context.user_data["suppress_next_menu_message"] = True
         logger.info("User %s finished checkout (meet)", user.id)
         return
@@ -288,6 +314,7 @@ async def checkout_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------- ГЛАВНОЕ МЕНЮ ----------
 async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # если только что оформили заказ — игнорируем это сообщение (оно уже обработано)
     if context.user_data.pop("suppress_next_menu_message", None):
         return MAIN_MENU
 
@@ -297,15 +324,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["gender"] = "Муж"
         await update.message.reply_text(
             "Мужская одежда. Выберите подкатегорию:",
-            reply_markup=ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("Сумки | Рюкзаки"), KeyboardButton("Верхняя одежда")],
-                    [KeyboardButton("Футболки"), KeyboardButton("Головные уборы")],
-                    [KeyboardButton("Штаны | Шорты")],
-                    [KeyboardButton("Назад в меню")],
-                ],
-                resize_keyboard=True,
-            ),
+            reply_markup=men_categories_keyboard(),
         )
         return MEN_MENU
 
@@ -313,18 +332,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["gender"] = "Жен"
         await update.message.reply_text(
             "Женская одежда. Выберите подкатегорию:",
-            reply_markup=ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("Сумки"), KeyboardButton("Головные уборы")],
-                    [
-                        KeyboardButton("Футболки | Топы"),
-                        KeyboardButton("Верхняя одежда"),
-                    ],
-                    [KeyboardButton("Штаны | Шорты")],
-                    [KeyboardButton("Назад в меню")],
-                ],
-                resize_keyboard=True,
-            ),
+            reply_markup=women_categories_keyboard(),
         )
         return WOMEN_MENU
 
@@ -361,6 +369,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
+    # --- РАСПРОДАЖА ---
     if text == "Распродажа":
         products = filter_products(main_category="Распродажа")
         if not products:
@@ -376,6 +385,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await send_products(update, context, products)
         return MAIN_MENU
+    # ------------------
 
     if text == "Моя корзина":
         await show_cart(update, context)
@@ -402,17 +412,44 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
+    if text == "Назад к категориям":
+        await update.message.reply_text(
+            "Мужская одежда. Выберите подкатегорию:",
+            reply_markup=men_categories_keyboard(),
+        )
+        return MEN_MENU
+
     if text == "Моя корзина":
         await show_cart(update, context)
         return MEN_MENU
 
-    if text in (
-        "Сумки | Рюкзаки",
-        "Верхняя одежда",
-        "Футболки",
-        "Головные уборы",
-        "Штаны | Шорты",
-    ):
+    # Подкатегории без размеров (сразу показываем товары)
+    no_size_subcats = ("Сумки | Рюкзаки", "Головные уборы")
+    if text in no_size_subcats:
+        context.user_data["current_main_category"] = "Одежда"
+        context.user_data["current_subcategory"] = text
+        context.user_data["gender"] = gender
+
+        products = filter_products(
+            main_category="Одежда",
+            subcategory=text,
+            size_group=None,
+            size=None,
+            gender=gender,
+        )
+
+        if not products:
+            await update.message.reply_text(
+                "Товаров с такими параметрами пока нет.",
+                reply_markup=men_categories_keyboard(),
+            )
+            return MEN_MENU
+
+        await send_products(update, context, products)
+        return MEN_MENU
+
+    # Подкатегории с размерами
+    if text in ("Верхняя одежда", "Футболки", "Штаны | Шорты"):
         context.user_data["current_main_category"] = "Одежда"
         context.user_data["current_subcategory"] = text
         context.user_data["gender"] = gender
@@ -422,6 +459,7 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MEN_MENU
 
+    # Выбор размера одежды
     if text in ("XS", "S", "M", "L", "XL", "XXL"):
         main_cat = context.user_data.get("current_main_category")
         subcat = context.user_data.get("current_subcategory")
@@ -464,17 +502,44 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
+    if text == "Назад к категориям":
+        await update.message.reply_text(
+            "Женская одежда. Выберите подкатегорию:",
+            reply_markup=women_categories_keyboard(),
+        )
+        return WOMEN_MENU
+
     if text == "Моя корзина":
         await show_cart(update, context)
         return WOMEN_MENU
 
-    if text in (
-        "Сумки",
-        "Головные уборы",
-        "Футболки | Топы",
-        "Верхняя одежда",
-        "Штаны | Шорты",
-    ):
+    # Без размеров: сумки и головные уборы
+    no_size_subcats = ("Сумки", "Головные уборы")
+    if text in no_size_subcats:
+        context.user_data["current_main_category"] = "Одежда"
+        context.user_data["current_subcategory"] = text
+        context.user_data["gender"] = gender
+
+        products = filter_products(
+            main_category="Одежда",
+            subcategory=text,
+            size_group=None,
+            size=None,
+            gender=gender,
+        )
+
+        if not products:
+            await update.message.reply_text(
+                "Товаров с такими параметрами пока нет.",
+                reply_markup=women_categories_keyboard(),
+            )
+            return WOMEN_MENU
+
+        await send_products(update, context, products)
+        return WOMEN_MENU
+
+    # С размерами
+    if text in ("Футболки | Топы", "Верхняя одежда", "Штаны | Шорты"):
         context.user_data["current_main_category"] = "Одежда"
         context.user_data["current_subcategory"] = text
         context.user_data["gender"] = gender
@@ -642,8 +707,7 @@ async def send_products(
     update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
     """
-    Показывает товары: описание + цена + размер + фото +
-    кнопка "Добавить в корзину" и "Консультация с продавцом"
+    Показывает товары: описание + цена + размер + фото + кнопки.
     """
     chat_id = update.effective_chat.id
 
@@ -670,7 +734,7 @@ async def send_products(
         if desc:
             text += f"\n\nОписание: {desc}"
 
-        # --- ИЗМЕНЁННАЯ КЛАВИАТУРА ---
+        # две кнопки в столбик: добавить в корзину и консультация
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -681,12 +745,11 @@ async def send_products(
                 [
                     InlineKeyboardButton(
                         "Консультация с продавцом",
-                        callback_data="consult_with_seller",
+                        callback_data="consult_seller",
                     )
                 ],
             ]
         )
-        # ------------------------------
 
         if photo_id and str(photo_id).lower() != "none":
             await context.bot.send_photo(
@@ -777,14 +840,19 @@ async def create_order(
     cart_text = "\n".join(lines)
     total_text = f"{total:.2f} BYN"
 
+    # Сообщение пользователю
     await update.message.reply_text(
         "Спасибо! Ваш заказ принят.\n"
         "Мы свяжемся с вами в ближайшее время.",
         reply_markup=main_menu_keyboard(),
     )
 
+    # Очищаем корзину в user_data,
+    # но локальная переменная cart остаётся со списком товаров —
+    # мы используем её ниже, чтобы отправить фото в канал заказов.
     context.user_data["cart"] = []
 
+    # Сообщение в канал с заказами
     if ORDERS_CHANNEL_ID:
         username = f"@{user.username}" if user.username else "нет username"
         profile_link = f"tg://user?id={user.id}"
@@ -817,10 +885,12 @@ async def create_order(
             ]
         )
 
+        # Основной текстовый пост с заказом
         await context.bot.send_message(
             chat_id=ORDERS_CHANNEL_ID, text=order_text, reply_markup=keyboard
         )
 
+        # Дополнительно — фото каждой позиции отдельными сообщениями
         for idx, item in enumerate(cart, start=1):
             photo_id = item.get("Photo_url") or None
             if photo_id and str(photo_id).lower() != "none":
@@ -849,6 +919,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     user_data = context.user_data
 
+    # консультация с продавцом
+    if data == "consult_seller":
+        await query.message.reply_text("Продавец — @ACHRAF_43")
+        return
+
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
@@ -861,12 +936,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await query.message.reply_text("Не удалось найти товар в каталоге.")
         return
-
-    # --- НОВЫЙ ОБРАБОТЧИК КОНСУЛЬТАЦИИ ---
-    if data == "consult_with_seller":
-        await query.message.reply_text("Продавец – @ACHRAF_43")
-        return
-    # -------------------------------------
 
     if data.startswith("remove_from_cart:"):
         try:
@@ -934,6 +1003,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             return
 
+        # 1. Связаться с покупателем
         if status == "contact":
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -961,6 +1031,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Отметка: связь с покупателем запрошена.")
             return
 
+        # 2. Заказ закрыт (покупка состоялась)
         if status == "closed":
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -970,6 +1041,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Заказ отмечен как закрытый.")
             return
 
+        # 3. Аннулировать заказ
         if status == "canceled":
             await context.bot.send_message(
                 chat_id=target_user_id,
@@ -981,8 +1053,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return
 
 
-# ---------- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ fail_id ----------
+# ---------- ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ fail_id ИЗ КАНАЛА С ФОТО ----------
 async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Если фото отправлено в канал PHOTO_CHANNEL_ID, бот отвечает под ним:
+    fail_id: <file_id>
+    """
     if not PHOTO_CHANNEL_ID:
         return
 
@@ -990,6 +1066,7 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.id != PHOTO_CHANNEL_ID:
         return
 
+    # Берём единое сообщение для ЛС/групп/каналов
     msg = update.effective_message
     if not msg or not msg.photo:
         return
@@ -997,6 +1074,7 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = msg.photo[-1].file_id
     text = f"fail_id:\n{file_id}"
 
+    # Отвечаем прямо под этим фото в канале
     await context.bot.send_message(
         chat_id=chat.id,
         text=text,
@@ -1008,12 +1086,14 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # 0-я группа: общий чек-аут и канал с фото
     app.add_handler(MessageHandler(filters.PHOTO, photo_id_handler), group=0)
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, checkout_text_handler),
         group=0,
     )
 
+    # 1-я группа: основной диалог
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
