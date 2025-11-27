@@ -227,16 +227,6 @@ def accessories_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def outerwear_sub_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton("Куртки | Плащи")],
-        [KeyboardButton("Ветровки | Бомберы")],
-        [KeyboardButton("Худи | Олимпийки")],
-        [KeyboardButton("Назад в меню")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
 # ----------------- СОСТОЯНИЯ ДИАЛОГА -----------------
 MAIN_MENU, MEN_MENU, WOMEN_MENU, SHOES_TYPE, SHOES_SIZE, ACCESSORIES_MENU = range(6)
 
@@ -378,7 +368,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    # --- БЛОК РАСПРОДАЖИ ---
+    # --- ИСПРАВЛЕННЫЙ БЛОК РАСПРОДАЖИ ---
     if text == "Распродажа":
         products = filter_products(main_category="Распродажа")
         if not products:
@@ -425,29 +415,9 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_cart(update, context)
         return MEN_MENU
 
-    # Подкатегория "Верхняя одежда" -> показываем доп. подкатегории
-    if text == "Верхняя одежда":
-        context.user_data["gender"] = gender
-        context.user_data["current_main_category"] = "Одежда"
-        await update.message.reply_text(
-            "Мужская верхняя одежда. Выберите подкатегорию:",
-            reply_markup=outerwear_sub_keyboard(),
-        )
-        return MEN_MENU
-
-    # Конкретные подкатегории верхней одежды
-    if text in ("Куртки | Плащи", "Ветровки | Бомберы", "Худи | Олимпийки"):
-        context.user_data["current_main_category"] = "Одежда"
-        context.user_data["current_subcategory"] = text
-        context.user_data["gender"] = gender
-        await update.message.reply_text(
-            f"Мужская {text}. Выберите размер:",
-            reply_markup=clothes_size_keyboard(),
-        )
-        return MEN_MENU
-
     if text in (
         "Сумки | Рюкзаки",
+        "Верхняя одежда",
         "Футболки",
         "Головные уборы",
         "Штаны | Шорты",
@@ -507,31 +477,11 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_cart(update, context)
         return WOMEN_MENU
 
-    # Подкатегория "Верхняя одежда"
-    if text == "Верхняя одежда":
-        context.user_data["gender"] = gender
-        context.user_data["current_main_category"] = "Одежда"
-        await update.message.reply_text(
-            "Женская верхняя одежда. Выберите подкатегорию:",
-            reply_markup=outerwear_sub_keyboard(),
-        )
-        return WOMEN_MENU
-
-    # Конкретные подкатегории верхней одежды
-    if text in ("Куртки | Плащи", "Ветровки | Бомберы", "Худи | Олимпийки"):
-        context.user_data["current_main_category"] = "Одежда"
-        context.user_data["current_subcategory"] = text
-        context.user_data["gender"] = gender
-        await update.message.reply_text(
-            f"Женские {text}. Выберите размер:",
-            reply_markup=clothes_size_keyboard(),
-        )
-        return WOMEN_MENU
-
     if text in (
         "Сумки",
         "Головные уборы",
         "Футболки | Топы",
+        "Верхняя одежда",
         "Штаны | Шорты",
     ):
         context.user_data["current_main_category"] = "Одежда"
@@ -701,8 +651,7 @@ async def send_products(
     update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
     """
-    Показывает товары: описание + цена + размер + фото +
-    кнопки "Добавить в корзину" и "Консультация с продавцом"
+    Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
     """
     chat_id = update.effective_chat.id
 
@@ -913,6 +862,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     user_data = context.user_data
 
+    # консультация с продавцом
+    if data == "consult_seller":
+        await query.message.reply_text("продавец - @ACHRAF_43")
+        return
+
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
@@ -924,10 +878,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 break
         else:
             await query.message.reply_text("Не удалось найти товар в каталоге.")
-        return
-
-    if data == "consult_seller":
-        await query.message.reply_text("Продавец — @ACHRAF_43")
         return
 
     if data.startswith("remove_from_cart:"):
