@@ -368,8 +368,20 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    if text == "Распродажа":
-        await update.message.reply_text("Раздел распродажи пока в разработке.")
+        if text == "Распродажа":
+        products = filter_products(main_category="Распродажа")
+        if not products:
+            await update.message.reply_text(
+                "Сейчас в разделе «Распродажа» нет товаров.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return MAIN_MENU
+
+        await update.message.reply_text(
+            "Товары со скидкой / уценка:",
+            reply_markup=main_menu_keyboard(),
+        )
+        await send_products(update, context, products)
         return MAIN_MENU
 
     if text == "Моя корзина":
