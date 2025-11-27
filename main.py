@@ -368,7 +368,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    # --- ИСПРАВЛЕННЫЙ БЛОК РАСПРОДАЖИ ---
+    # --- БЛОК РАСПРОДАЖИ ---
     if text == "Распродажа":
         products = filter_products(main_category="Распродажа")
         if not products:
@@ -384,7 +384,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await send_products(update, context, products)
         return MAIN_MENU
-    # -------------------------------------
+    # ------------------------
 
     if text == "Моя корзина":
         await show_cart(update, context)
@@ -404,6 +404,22 @@ async def men_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
     gender = "Муж"
+
+    # Назад из размерной сетки к списку подкатегорий мужской одежды
+    if text == "Назад к категориям":
+        await update.message.reply_text(
+            "Мужская одежда. Выберите подкатегорию:",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("Сумки | Рюкзаки"), KeyboardButton("Верхняя одежда")],
+                    [KeyboardButton("Футболки"), KeyboardButton("Головные уборы")],
+                    [KeyboardButton("Штаны | Шорты")],
+                    [KeyboardButton("Назад в меню")],
+                ],
+                resize_keyboard=True,
+            ),
+        )
+        return MEN_MENU
 
     if text == "Назад в меню":
         await update.message.reply_text(
@@ -466,6 +482,25 @@ async def women_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
     gender = "Жен"
+
+    # Назад из размерной сетки к списку подкатегорий женской одежды
+    if text == "Назад к категориям":
+        await update.message.reply_text(
+            "Женская одежда. Выберите подкатегорию:",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("Сумки"), KeyboardButton("Головные уборы")],
+                    [
+                        KeyboardButton("Футболки | Топы"),
+                        KeyboardButton("Верхняя одежда"),
+                    ],
+                    [KeyboardButton("Штаны | Шорты")],
+                    [KeyboardButton("Назад в меню")],
+                ],
+                resize_keyboard=True,
+            ),
+        )
+        return WOMEN_MENU
 
     if text == "Назад в меню":
         await update.message.reply_text(
@@ -651,7 +686,7 @@ async def send_products(
     update: Update, context: ContextTypes.DEFAULT_TYPE, products: List[Dict]
 ):
     """
-    Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
+    Показывает товары: описание + цена + размер + фото + кнопки
     """
     chat_id = update.effective_chat.id
 
@@ -678,6 +713,7 @@ async def send_products(
         if desc:
             text += f"\n\nОписание: {desc}"
 
+        # Две строки кнопок: добавление в корзину и консультация
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -791,8 +827,7 @@ async def create_order(
     )
 
     # Очищаем корзину в user_data,
-    # но локальная переменная cart остаётся со списком товаров —
-    # мы используем её ниже, чтобы отправить фото в канал заказов.
+    # но локальная переменная cart остаётся — используем её ниже для фото.
     context.user_data["cart"] = []
 
     # Сообщение в канал с заказами
@@ -862,9 +897,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     user_data = context.user_data
 
-    # консультация с продавцом
+    # Консультация с продавцом
     if data == "consult_seller":
-        await query.message.reply_text("продавец - @ACHRAF_43")
+        await query.message.reply_text("Продавец — @ACHRAF_43")
         return
 
     if data.startswith("add_to_cart:"):
