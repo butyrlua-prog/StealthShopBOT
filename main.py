@@ -368,7 +368,8 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-        if text == "Распродажа":
+    # --- ИСПРАВЛЕННЫЙ БЛОК РАСПРОДАЖИ ---
+    if text == "Распродажа":
         products = filter_products(main_category="Распродажа")
         if not products:
             await update.message.reply_text(
@@ -383,6 +384,7 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await send_products(update, context, products)
         return MAIN_MENU
+    # -------------------------------------
 
     if text == "Моя корзина":
         await show_cart(update, context)
