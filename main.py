@@ -368,7 +368,6 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MAIN_MENU
 
-    # --- ИСПРАВЛЕННЫЙ БЛОК РАСПРОДАЖИ ---
     if text == "Распродажа":
         products = filter_products(main_category="Распродажа")
         if not products:
@@ -384,7 +383,6 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await send_products(update, context, products)
         return MAIN_MENU
-    # -------------------------------------
 
     if text == "Моя корзина":
         await show_cart(update, context)
@@ -652,6 +650,7 @@ async def send_products(
 ):
     """
     Показывает товары: описание + цена + размер + фото + кнопка "Добавить в корзину"
+    + кнопка "Консультация с продавцом"
     """
     chat_id = update.effective_chat.id
 
@@ -683,7 +682,10 @@ async def send_products(
                 [
                     InlineKeyboardButton(
                         "Добавить в корзину", callback_data=f"add_to_cart:{row_id}"
-                    )
+                    ),
+                    InlineKeyboardButton(
+                        "Консультация с продавцом", callback_data="consult_seller"
+                    ),
                 ]
             ]
         )
@@ -856,6 +858,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     user_data = context.user_data
 
+    # новая кнопка консультации
+    if data == "consult_seller":
+        await query.message.reply_text("Продавец — @ACHRAF_43")
+        return
+
     if data.startswith("add_to_cart:"):
         row_id = norm(data.split(":", 1)[1])
         products = load_products()
@@ -1012,6 +1019,7 @@ async def photo_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=text,
         reply_to_message_id=msg.message_id,
     )
+
 
 # ----------------- MAIN -----------------
 def main():
